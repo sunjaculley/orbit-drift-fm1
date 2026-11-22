@@ -801,8 +801,11 @@ static int32_t ta_q8, tb_q8, lp_a, lp_b;
 static const int16_t RV_LEN[4] = {3203, 3529, 3911, 4373};
 #define RV_TOTAL (AP1 + AP2 + 3203 + 3529 + 3911 + 4373)
 static int16_t rvb[RV_TOTAL] POOL;
-static int16_t *rv_ap1 = rvb, *rv_ap2 = rvb + AP1;
-static int16_t *rv_line[4];
+static int16_t *const rv_ap1 = rvb, *const rv_ap2 = rvb + AP1;
+/* fixed at build time: on the FM-1, audio() starts before setup() runs */
+static int16_t *const rv_line[4] = {rvb + AP1 + AP2, rvb + AP1 + AP2 + 3203, rvb + AP1 + AP2 + 3203 + 3529,
+                                    rvb + AP1 + AP2 + 3203 + 3529 + 3911};
+static volatile uint8_t ready; /* setup() has run: until then audio() plays silence */
 static int32_t rv_i1, rv_i2, rv_w[4], rv_lp[4], rv_hold, rv_held;
 
 static int32_t lim_env = 26000;
@@ -815,6 +818,10 @@ static int32_t dly_read(const int16_t *buf, int32_t t_q8) {
 }
 
 void audio(int32_t *out, uint32_t nframes) {
+  if (!ready) {
+    for (uint32_t i = 0; i < 2 * nframes; i++) out[i] = 0;
+    return;
+  }
   uint32_t t0 = micros();
   const clock_event_t *ev;
   int nev = clock_events(&ev), e = 0;
@@ -3102,14 +3109,13 @@ void setup(void) {
       int dy2 = 2 * r - 2 * j - 1, dx2 = isqrt(4 * r * r - dy2 * dy2);
       INS[r][j] = (uint8_t)(r - (dx2 + 1) / 2);
     }
-  int off = AP1 + AP2;
-  for (int i = 0; i < 4; i++) rv_line[i] = rvb + off, off += RV_LEN[i];
   if (settings_load(&S, sizeof S) != 0 || S.magic != MAGIC) init_all();
   clear(C_BG);
   clock_tempo((uint32_t)S.k[K_BPM] * 100u);
   clock_send(1);
   clock_follow(S.k[K_SYNC] ? MIDI_ANY : 0);
   led_backlight(1);
+  ready = 1;
   print("ORBIT DRIFT ready");
 }
 
