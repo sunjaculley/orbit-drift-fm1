@@ -8,7 +8,8 @@
  *   EDIT          synth OSC / TONE, drums SOUND / SWEEP     SEL  synth MOD, drums PERF     ENV  envelope
  *   LFO           the LFO: one wave to FILTER, INDEX, PITCH, LEVEL, PAN or DELAY
  *   FX            DELAY / SPACE / BUS (sends) / STEP MOD (a drum track moves the synth)   GLO  GLOBAL / GLOBAL 2
- *   PRESETS       orbits the synth puck past corners A-D    ALGORITHM  pulls it to the centre (on every page)
+ *   ALGORITHM     synth puck X, on every page               PRESETS  synth puck Y: blends the sounds in corners A-D
+ *                 a sound knob turned on a corner changes that corner; turned in between, all four together
  *   SELECT        lane or track (steps held: trig condition)   KNOB1-4  cyan, lime, white, orange on every page
  *
  *   synth         white keys: steps of the lane (tap: off, short, medium, long, longest). OCT- / OCT+: 1-16 / 17-32
@@ -161,7 +162,7 @@ typedef struct {
   uint8_t lock[TRACKS][DSTEPS][DP];
 } bank_t;
 
-#define MAGIC 0x4F440003u /* "OD" + layout 2: the morph is polar */
+#define MAGIC 0x4F440004u /* "OD" + layout 2: the morph is polar */
 typedef struct {
   uint32_t magic;
   int16_t k[NK];
@@ -210,7 +211,7 @@ static void init_all(void) {
   for (int i = 0; i < NK; i++) S.k[i] = KDEFAULT[i];
   for (int c = 0; c < 4; c++)
     for (int i = 0; i < NMORPH; i++) S.corner[c][i] = CORNER_DEFAULT[c][i];
-  S.xy[0] = 224, S.xy[1] = 100; /* on the ring at corner A */
+  S.xy[0] = S.xy[1] = 0; /* on corner A */
   for (int t = 0; t < TRACKS; t++) {
     S.vol[t] = DVOLUME[t];
     for (int p = 0; p < DP; p++) S.def[t][p] = DDEFAULT[t][p];
@@ -1185,18 +1186,10 @@ static void draw_head(void) {
   rect(0, 18, SCREEN_W, 1, C_LINE);
 }
 
-/* ================================================================ morph: polar. xy[0] is the angle (256 a turn,
- * 0 at the top), xy[1] the pull (100 on the ring, 0 at the centre). The ring is stretched onto the square of the
- * four corners, so the puck sitting on a corner is exactly that corner's sound. */
-static const uint8_t CANG[4] = {224, 32, 160, 96}; /* A top left, B top right, C bottom left, D bottom right */
-static void morph_xy(int *mx, int *my) {
-  uint32_t ph = (uint32_t)S.xy[0] << 24;
-  int32_t sn = sine(ph), cs = sine(ph + 1073741824u);
-  int32_t as = sn < 0 ? -sn : sn, ac = cs < 0 ? -cs : cs, m = as > ac ? as : ac;
-  if (m < 1) m = 1;
-  *mx = 50 + sn * 50 / m * S.xy[1] / 100;
-  *my = 50 - cs * 50 / m * S.xy[1] / 100;
-}
+/* ================================================================ morph: the puck's X and Y blend the sounds of
+ * the four corners. A top left, B top right, C bottom left, D bottom right. */
+static void morph_xy(int *mx, int *my) { *mx = S.xy[0], *my = S.xy[1]; }
+static int on_corner(void) { return S.xy[0] % 100 == 0 && S.xy[1] % 100 == 0; }
 static void apply_morph(void) {
   int x, y;
   morph_xy(&x, &y);
@@ -1330,12 +1323,16 @@ static void draw_ctx(int y) {
   msg[0] = 0;
   const bank_t *bk = CB();
   if (view == V_PERF) {
-    d = put(b, "NEAR ");
+    d = put(b, on_corner() ? "ON " : "NEAR ");
     *d++ = (char)('A' + nearest_corner());
-    d = put(d, "  ORBIT ");
-    d = put_int(d, S.xy[0] * 360 / 256);
-    d = put(d, "  PULL ");
-    put_int(d, S.xy[1]);
+    if (on_corner()) {
+      put(d, ": KNOBS EDIT THIS SOUND");
+    } else {
+      d = put(d, "  X ");
+      d = put_int(d, S.xy[0]);
+      d = put(d, "  Y ");
+      put_int(d, S.xy[1]);
+    }
     center(0, SCREEN_W, y, b, CORNER_COL[nearest_corner()], FONT_SMALL);
     return;
   }
@@ -1676,40 +1673,32 @@ static void draw_sys(void) {
 }
 
 /* ================================================================ PERFORM */
-#define PCX 70
-#define PCY 88
-#define PR 56
+#define XS 8
 #define YS 22
 #define XYZ 128
 static uint8_t trail[16][2], trail_n;
-static void puck_pos(int a, int pull, int *x, int *y) {
-  uint32_t ph = (uint32_t)a << 24;
-  int r = PR * pull / 100;
-  *x = PCX + ((r * sine(ph) + 16384) >> 15);
-  *y = PCY - ((r * sine(ph + 1073741824u) + 16384) >> 15);
-}
-static void draw_ring(void) { /* the morph: PRESETS orbits the puck past the corners, ALGORITHM pulls it in */
+static int puck_x(int v) { return XS + 8 + v * (XYZ - 16) / 100; }
+static int puck_y(int v) { return YS + 8 + v * (XYZ - 16) / 100; }
+static void draw_ring(void) { /* the XY square: ALGORITHM is X, PRESETS is Y; the four sounds sit in its corners */
   static const char *const CN[4] = {"A", "B", "C", "D"};
-  int x, y, nc = nearest_corner();
+  int nc = nearest_corner();
   rect(0, 19, 142, 136, C_BG);
-  arc_at(PCX, PCY, PR, PR + 1, 0, 4096, C_LINE2);
-  ring_dots(PCX, PCY, PR / 2, C_LINE);
-  for (int i = 0; i < trail_n; i++) {
-    puck_pos(trail[i][0], trail[i][1], &x, &y);
-    disk(x, y, 1, mix565(C_BG, C_LIME, 40 + i * 120 / 16));
+  capsule(XS, YS, XYZ, XYZ, 8, C_PANEL);
+  for (int i = 1; i < 4; i++) {
+    rect(XS + i * 32, YS + 4, 1, XYZ - 8, C_LINE);
+    rect(XS + 4, YS + i * 32, XYZ - 8, 1, C_LINE);
   }
-  puck_pos(S.xy[0], S.xy[1], &x, &y);
-  line(PCX, PCY, x, y, mix565(C_BG, C_LIME, 90));
+  for (int i = 0; i < trail_n; i++) disk(puck_x(trail[i][0]), puck_y(trail[i][1]), 1, mix565(C_PANEL, C_LIME, 40 + i * 120 / 16));
   for (int c = 0; c < 4; c++) {
-    int cx, cy;
-    puck_pos(CANG[c], 100, &cx, &cy);
+    int cx = puck_x(c & 1 ? 100 : 0), cy = puck_y(c & 2 ? 100 : 0);
     disk(cx, cy, 10, CORNER_COL[c]);
-    disk(cx, cy, 8, c == nc ? CORNER_COL[c] : C_BG);
+    disk(cx, cy, 8, c == nc ? CORNER_COL[c] : C_PANEL);
     center(cx - 8, 17, cy - 8, CN[c], c == nc ? C_BG : CORNER_COL[c], FONT_SMALL);
   }
-  disk(x, y, 6, mix565(C_BG, C_LIME, 80));
-  disk(x, y, 4, mix565(C_BG, C_LIME, 160));
-  disk(x, y, 2, C_TEXT);
+  int px = puck_x(S.xy[0]), py = puck_y(S.xy[1]);
+  disk(px, py, 6, mix565(C_PANEL, C_LIME, 80));
+  disk(px, py, 4, mix565(C_PANEL, C_LIME, 160));
+  disk(px, py, 2, C_TEXT);
 }
 static void draw_pills(void) {
   static const uint8_t PK[4] = {K_INT, K_KIT, K_THROW, K_FILT};
@@ -2229,7 +2218,16 @@ static int sgn(int d) { return d > 0 ? 1 : -1; }
 static void edit_k(int id, int d) {
   if (id == 255 || !d) return;
   int u = KD[id].unit, dd = (u == U_ALGO || u == U_SCALE || u == U_NOTE || u == U_SYNC || u == U_FRAC || u == U_DEST || u == U_SHAPE || u == U_TRACK) ? sgn(d) : d;
+  int was = S.k[id];
   S.k[id] = (int16_t)clampi(S.k[id] + dd * KD[id].step, KD[id].min, KD[id].max);
+  for (int i = 0; i < NMORPH; i++) {
+    if (MORPH_K[i] != id) continue;
+    if (on_corner()) {
+      S.corner[nearest_corner()][i] = S.k[id];
+    } else {
+      for (int c = 0; c < 4; c++) S.corner[c][i] = (int16_t)clampi(S.corner[c][i] + S.k[id] - was, KD[id].min, KD[id].max);
+    }
+  }
   if (id == K_BPM) clock_tempo((uint32_t)S.k[K_BPM] * 100u), dirty |= D_HEAD;
   if (id == K_SYNC) clock_follow(S.k[K_SYNC] ? MIDI_ANY : 0), dirty |= D_HEAD;
   if (id == K_SCALE || id == K_ROOT) dirty |= D_CTX;
@@ -2408,15 +2406,15 @@ static void black_down(int bk) {
         save_used = 1;
         say("SOUND STORED IN CORNER");
       } else {
-        S.xy[0] = CANG[bk];
-        S.xy[1] = 100;
+        S.xy[0] = bk & 1 ? 100 : 0;
+        S.xy[1] = bk & 2 ? 100 : 0;
         apply_morph();
       }
       dirty |= D_MAIN | D_CTX | D_VALS;
     } else if (bk == BK_RND) {
       S.k[K_INT] = 50, dirty |= D_MAIN | D_VALS;
     } else if (bk == BK_CLR) {
-      S.xy[1] = 0, apply_morph(), dirty |= D_MAIN | D_CTX;
+      S.xy[0] = S.xy[1] = 50, apply_morph(), dirty |= D_MAIN | D_CTX;
     }
     return;
   }
@@ -2762,14 +2760,16 @@ void loop(void) {
     if (trail_n < 16) trail_n++;
     for (int i = 0; i < trail_n - 1; i++) trail[i][0] = trail[i + 1][0], trail[i][1] = trail[i + 1][1];
     trail[trail_n - 1][0] = S.xy[0], trail[trail_n - 1][1] = S.xy[1];
-    S.xy[0] = (uint8_t)(S.xy[0] + ey * 2);                   /* PRESETS orbits */
-    S.xy[1] = (uint8_t)clampi(S.xy[1] + ex * 2, 0, 100);     /* ALGORITHM pulls in and out */
+    S.xy[0] = (uint8_t)clampi(S.xy[0] + ex * 2, 0, 100); /* ALGORITHM: X */
+    S.xy[1] = (uint8_t)clampi(S.xy[1] + ey * 2, 0, 100); /* PRESETS: Y */
     apply_morph();
     if (view == V_PERF || view == V_PAGE) dirty |= D_MAIN | D_CTX;
     if (view != V_PERF && now - puck_say > 120) {
-      char b[28], *d = put(b, "ORBIT ");
-      d = put_int(d, S.xy[0] * 360 / 256);
-      d = put(d, "  PULL ");
+      char b[28], *d = put(b, on_corner() ? "CORNER " : "MORPH NEAR ");
+      *d++ = (char)('A' + nearest_corner());
+      d = put(d, "  X ");
+      d = put_int(d, S.xy[0]);
+      d = put(d, " Y ");
       put_int(d, S.xy[1]);
       say(b);
       puck_say = now;

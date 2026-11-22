@@ -22,7 +22,7 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / STEP MOD · GLOBAL / GLOBAL 2. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
 | LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, or the DELAY time. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
 | SELECT | Pick the lane or the track (lanes sound their note). With steps held: trig condition |
-| PRESETS / ALGORITHM | The morph, on every page: PRESETS orbits the puck past the four stored sounds A-D, ALGORITHM pulls it toward the centre, where all four blend |
+| ALGORITHM / PRESETS | The morph, on every page: X and Y of a puck that blends the four sounds in corners A-D. Turn a sound knob with the puck on a corner and that corner changes; turn it anywhere else and all four shift together, so no edit is lost |
 | HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SYSTEM (CPU, voices, load history) |
 | ARP | PERFORM |
 | PLAY · REC · SAVE | Start, stop · live record (drums: tap a track key while playing) · store in flash (when stopped). SAVE + D#5: INIT |
@@ -40,7 +40,7 @@ through the tracks. Hold F#5 and tap a lane or track key to mute it.
 
 **Perform.** KNOB1-4: drum INTENSITY (below centre thins the beat, above adds ghost hits), KIT (shorter / longer,
 softer / brighter), FX THROW (more of everything into the delay and the space) and FILTER. F#3-C#4 jump the puck
-to corners A-D; SAVE + one stores the sound there; D#5 pulls the puck to the centre. White keys 9-13 mute the drum tracks, 14 the synth, 15 freezes
+to corners A-D; SAVE + one copies the sound you hear into that corner; D#5 centres the puck. White keys 9-13 mute the drum tracks, 14 the synth, 15 freezes
 the delay while held, 16 turns everything back on.
 
 ## For the FM-1
