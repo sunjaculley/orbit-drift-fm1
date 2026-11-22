@@ -289,10 +289,11 @@ static int32_t coef_slice(int32_t n) { /* fall to 0.001 over n frames, applied o
 }
 static int32_t clampi(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 static int32_t clamp16(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
-static int32_t dev_of(uint32_t inc, int32_t idx, int32_t div) { /* (inc >> 8) x idx / div << 8, kept in range */
-  int64_t d = (int64_t)(inc >> 8) * idx / div;
-  if (d > (1 << 22)) d = 1 << 22;
-  return (int32_t)d << 8;
+static int32_t dev_of(uint32_t inc, int32_t idx, int32_t div) { /* inc x idx / div, kept in range: 32-bit division only */
+  uint64_t prod = (uint64_t)(inc >> 8) * (uint32_t)idx;
+  uint32_t d = prod < 0xFFFFFFFFull ? (uint32_t)prod / (uint32_t)div : ((uint32_t)(prod >> 8) / (uint32_t)div) << 8;
+  if (d > (1u << 22)) d = 1u << 22;
+  return (int32_t)(d << 8);
 }
 
 static void filter_coefs(svoice_t *v) {
@@ -1429,12 +1430,12 @@ static void draw_dgraph(void) { /* the selected track's shape: amp envelope and 
   }
   int32_t atk = p[P_ATK], rel = kit_scale(p[P_REL] * 5), total = atk + rel;
   int px = 4, py = 184;
-  int32_t a = 32768;
+  int32_t a = 32768, fa = clampi(6907 * total / 232 * 33 / (rel ? rel : 1), 0, 32768); /* 60 dB over rel, per pixel, Q15 */
   for (int x = 0; x < 232; x++) {
     int32_t t = total * x / 232, y;
     if (t < atk) y = 184 - 32 * t / (atk ? atk : 1);
     else {
-      a = a - (int32_t)((int64_t)a * 6907 * total / 232 / 1000 / (rel ? rel : 1));
+      a -= (a * fa) >> 15;
       y = 184 - (32 * a >> 15);
     }
     line(px, py, 4 + x, y, TRACK_COL[track]);
@@ -1442,10 +1443,10 @@ static void draw_dgraph(void) { /* the selected track's shape: amp envelope and 
   }
   if (p[P_SWD]) {
     int32_t sw = 32768, st = p[P_SWT] * 2, depth = 32 * p[P_SWD] / 48 + 2;
+    int32_t fs = clampi(6907 * total * 2 / 232 * 33 / (st ? st : 1), 0, 32768);
     px = 4, py = 184 - depth;
     for (int x = 0; x < 232; x += 2) {
-      sw = sw - (int32_t)((int64_t)sw * 6907 * total * 2 / 232 / 1000 / (st ? st : 1));
-      if (sw < 0) sw = 0;
+      sw -= (sw * fs) >> 15;
       int y = 184 - (depth * sw >> 15);
       line(px, py, 4 + x, y, C_AMBER);
       px = 4 + x, py = y;
