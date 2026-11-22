@@ -25,7 +25,14 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | ALGORITHM / PRESETS | The morph, on every page: X and Y of a puck that blends the four sounds in corners A-D. Turn a sound knob with the puck on a corner and that corner changes; turn it anywhere else and all four shift together, so no edit is lost |
 | HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SYSTEM (CPU, voices, load history) |
 | ARP | PERFORM |
+| Hold FX | Effects on the white keys while held: 1 freeze, 2 echo throw, 3 space throw, 4 filter low, 5 filter high, 6 thin, 7 busy, 8 repeat; 13-16 jump the puck to corners A-D. Black keys mute lanes (synth) or tracks (drums). KNOB1-4: the Perform macros |
+| Hold SEQ | 1-4 bank A-D (at the next bar while playing); 5 clear, 6 reverse, 7 / 8 shift, 9 new rhythm, 10 cook (a small change each press), 11 double, 12 half, 13 copy, 14 paste. KNOB1 length, KNOB2 hits (spread evenly: Euclidean), KNOB3 rotate, KNOB4 swing |
+| Hold GLO | 1 tap tempo, 2 restart from the top, 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
+| Hold LFO | Turn any knob: the change springs back when LFO is let go |
+| Hold SAVE | Undo the last edit or tool (again: redo) |
 | PLAY · REC · SAVE | Start, stop · live record (drums: tap a track key while playing) · store in flash (when stopped). SAVE + D#5: INIT |
+
+Holding FX, SEQ or GLO shows a map of the keys and what each does, and the knob strip shows the layer's knobs. A quick tap is still the page button.
 
 **Synth.** White keys are the steps of the selected lane: tap cycles the note length (short, medium, long, longest,
 off). OCT- / OCT+ reach steps 1-16 / 17-32. Hold steps and turn KNOB1-4 to lock PITCH, VELOCITY, INDEX and SEND;
