@@ -10,7 +10,8 @@ fractional ratios and noise types added from Fors FMS. Made with [foma](https://
 Version 0.7 adds the song chain, snapshots, morph path recording, the transpose sequence, the echo field, unison,
 a second lock set, trigless steps, playing the synth from the keys, FILL, knob recording and restore at power-on.
 Version 0.8 adds MIDI note input, held notes in KEYS, drum trigless steps, knob recording on the lanes, saved morph
-paths, song mutes per block and undo for sound and song edits. A 0.7 save carries over.
+paths, song mutes per block and undo for sound and song edits. Version 0.9 adds the MIX page. Saves from 0.7 and
+0.8 carry over.
 
 ## Playing it
 
@@ -21,7 +22,7 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | Control | What it does |
 | --- | --- |
 | SEQ | The steps (lanes or drum pads). From the steps: switch SYNTH / DRUMS. Hold SEQ + white key 1-4: bank A-D (while playing, at the next bar) |
-| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD / INDEX / UNISON · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / STEP MOD · GLOBAL / TRANSPOSE. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
+| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD / INDEX / UNISON · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / MIX / STEP MOD · GLOBAL / TRANSPOSE. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
 | LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz, or synced from 4 bars to 1/32) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, the DELAY time, or the drums' pitch or level. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
 | SELECT | Pick the lane or the track (lanes sound their note). With steps held: trig condition |
 | ALGORITHM / PRESETS | The morph, on every page: X and Y of a puck that blends the four sounds in corners A-D. Turn a sound knob with the puck on a corner and that corner changes; turn it anywhere else and all four shift together, so no edit is lost |
@@ -59,6 +60,11 @@ to corners A-D; SAVE + one copies the sound you hear into that corner; D#5 centr
 the delay while held, 16 turns everything back on. White keys 1-8 are snapshots (puck, macros, mutes): SAVE + key stores, hold a key to
 play it, let go to return. REC records the puck's path (up to 8 bars) while playing; REC again plays it back in a
 loop (moving the puck pauses it, REC resumes); hold REC 1 s to clear. The path is saved with everything else.
+
+**Mix.** FX four times. KNOB1 the synth's level, KNOB2 the drums', KNOB3 the selected lane's level (or, from the
+drums, the selected drum's volume; SELECT picks), KNOB4 the master. Levels read in dB (0.0 is where they start).
+Meters beside the faders show what plays; LIMIT lights when the output limiter is pulling the level down, a sign
+to lower the master or the louder side.
 
 **Song.** HOME twice. White keys 1-4 add a block of bank A-D; KNOB1 picks a block, KNOB2 its bank, KNOB3 its
 repeats in bars, KNOB4 turns the song on. Black keys F#3-D#4 mute KICK-CLAP in the block and F#4 the synth (the

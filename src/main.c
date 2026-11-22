@@ -177,7 +177,8 @@ typedef struct {
 } snap_t;
 
 #define MAGIC_07 0x4F440005u /* 0.7: the same layout up to song_mute */
-#define MAGIC 0x4F440006u
+#define MAGIC_08 0x4F440006u /* 0.8: the same layout up to mix */
+#define MAGIC 0x4F440007u
 typedef struct {
   uint32_t magic;
   int16_t k[NK];
@@ -193,9 +194,18 @@ typedef struct {
   uint8_t song_mute[16]; /* per song block: bits 0-4 drum tracks, 5 the synth */
   uint8_t path_len, pad3[3];
   uint8_t path[128][2]; /* the morph path, a puck position each step */
+  /* 0.9 */
+  uint8_t mix[4];  /* levels 0-127 (100 = 0 dB): synth, drums, master */
+  uint8_t llev[8]; /* each synth lane */
 } store_t;
 static store_t S;
 #define OLD07_SIZE 11860u
+#define OLD08_SIZE 12136u
+_Static_assert(__builtin_offsetof(store_t, mix) == OLD08_SIZE, "0.8 layout must stay a prefix");
+static void mix_defaults(void) {
+  S.mix[0] = S.mix[1] = S.mix[2] = 100, S.mix[3] = 0;
+  for (int l = 0; l < 8; l++) S.llev[l] = 100;
+}
 _Static_assert(__builtin_offsetof(store_t, song_mute) == OLD07_SIZE, "0.7 layout must stay a prefix");
 #define HEAD_SIZE __builtin_offsetof(store_t, bank) /* settings, sounds, song: what sound undo covers */
 _Static_assert(sizeof(store_t) <= SETTINGS_MAX, "settings too big");
@@ -235,6 +245,7 @@ static void init_bank(bank_t *b) {
 static void init_all(void) {
   fill(&S, 0, sizeof S);
   S.magic = MAGIC;
+  mix_defaults();
   for (int i = 0; i < NK; i++) S.k[i] = KDEFAULT[i];
   for (int c = 0; c < 4; c++)
     for (int i = 0; i < NMORPH; i++) S.corner[c][i] = CORNER_DEFAULT[c][i];
@@ -494,6 +505,7 @@ static void render_synth(int32_t *out, int32_t *sbus, uint32_t n) {
   for (int vi = 0; vi < MAXSV; vi++) {
     svoice_t *v = &SV[vi];
     if (!v->active) continue;
+    int32_t lg = (int32_t)S.mix[0] * (v->lane < 8 ? S.llev[v->lane] : 100) * 4096 / 10000; /* the mix: synth x lane, Q12 */
     if (v->lframes) { /* the index envelope loops in time */
       v->lcount -= (int32_t)n;
       if (v->lcount <= 0) {
@@ -581,6 +593,7 @@ static void render_synth(int32_t *out, int32_t *sbus, uint32_t n) {
       if (y > 65534) y = 65534;
       if (y < -65534) y = -65534;
       y = (y * (amp >> 9)) >> 15;
+      y = (y * lg) >> 12;
       int32_t l = (y * v->gl) >> 15, r = (y * v->gr) >> 15;
       out[2 * f] += l;
       out[2 * f + 1] += r;
@@ -975,6 +988,8 @@ static volatile uint8_t ready; /* setup() has run: until then audio() plays sile
 static int32_t rv_i1, rv_i2, rv_w[4], rv_lp[4], rv_hold, rv_held;
 
 static int32_t lim_env = 26000;
+static volatile uint16_t pk_syn, pk_drm, pk_out; /* meters: the loudest sample since the panel last looked */
+static volatile uint8_t limiting;
 
 static int32_t dly_read(const int16_t *buf, int32_t t_q8) {
   uint32_t pos = dw - (uint32_t)(t_q8 >> 8);
@@ -1062,6 +1077,7 @@ void audio(int32_t *out, uint32_t nframes) {
   int32_t ldep = k[K_LDEPTH] * 328, mdep = k[K_MDEPTH] * 328, smcoef = coef_slice(frames(k[K_MSHAPE]));
   int ld = ldep ? k[K_LDEST] : 0, md = mdep ? k[K_MDEST] : 0;
   int32_t gl_s = 32768, gr_s = 32768, dmod = 0;
+  int32_t dg12 = S.mix[1] * 4096 / 100, mg12 = S.mix[2] * 4096 / 100, bs = 0, bd = 0, bo = 0;
 
   for (uint32_t at = 0; at < nframes; at += SUB) {
     uint32_t n = nframes - at < SUB ? nframes - at : SUB;
@@ -1116,7 +1132,7 @@ void audio(int32_t *out, uint32_t nframes) {
     ta_q8 += (want_a - ta_q8) >> 4;
     tb_q8 += (want_b - tb_q8) >> 4;
     for (uint32_t f = 0; f < n; f++) {
-      int32_t sb = clamp16(sbus[f]), db = (clamp16(dbus[f]) * m_dlev) >> 15;
+      int32_t sb = clamp16(sbus[f]), db = (((clamp16(dbus[f]) * m_dlev) >> 15) * dg12) >> 12;
       int32_t dsend = clamp16(((sb * gsd) >> 15) + ((db * gdd) >> 15));
       int32_t wl, wr;
       if (field) {
@@ -1172,8 +1188,13 @@ void audio(int32_t *out, uint32_t nframes) {
       /* mix, master 0.9, then the limiter: ceiling 2 dB under full scale, release ~190 ms */
       int32_t l = (int32_t)(((((int64_t)o[2 * f] * 19661) >> 15) * gl_s) >> 15) + db + wl + rl;
       int32_t r = (int32_t)(((((int64_t)o[2 * f + 1] * 19661) >> 15) * gr_s) >> 15) + db + wr + rr;
-      l = (int32_t)(((int64_t)l * 29491) >> 15);
-      r = (int32_t)(((int64_t)r * 29491) >> 15);
+      { /* meters, before the master */
+        int32_t sv = (int32_t)(((int64_t)o[2 * f] * 19661) >> 15), sa = sv < 0 ? -sv : sv, da = db < 0 ? -db : db;
+        if (sa > bs) bs = sa;
+        if (da > bd) bd = da;
+      }
+      l = (int32_t)(((int64_t)l * 29491 >> 15) * mg12 >> 12);
+      r = (int32_t)(((int64_t)r * 29491 >> 15) * mg12 >> 12);
       int32_t pk = l < 0 ? -l : l, pr = r < 0 ? -r : r;
       if (pr > pk) pk = pr;
       if (pk > lim_env) lim_env = pk;
@@ -1182,8 +1203,14 @@ void audio(int32_t *out, uint32_t nframes) {
       int32_t g = (26000 * 32768) / lim_env;
       o[2 * f] = (int32_t)(((int64_t)l * g) >> 15);
       o[2 * f + 1] = (int32_t)(((int64_t)r * g) >> 15);
+      int32_t oa = o[2 * f] < 0 ? -o[2 * f] : o[2 * f];
+      if (oa > bo) bo = oa;
     }
   }
+  if (bs > pk_syn) pk_syn = (uint16_t)(bs > 65535 ? 65535 : bs);
+  if (bd > pk_drm) pk_drm = (uint16_t)(bd > 65535 ? 65535 : bd);
+  if (bo > pk_out) pk_out = (uint16_t)(bo > 65535 ? 65535 : bo);
+  if (lim_env > 26600) limiting = 1;
   uint32_t used = micros() - t0, budget = nframes * 22676u / 1000u;
   load_pct = (uint16_t)((load_pct * 7u + (budget ? used * 100u / budget : 0)) / 8u);
 }
@@ -1261,17 +1288,24 @@ static const uint16_t KC[4] = {RGB(77, 225, 240), RGB(200, 242, 90), RGB(242, 24
 
 enum { V_HOME, V_SYS, V_SYNTH, V_DRUM, V_PAGE, V_PERF, V_SONG };
 enum { PG_OSC, PG_TONE, PG_MOD, PG_ENV, PG_DSND, PG_DSWP, PG_DPRF, PG_DENV, PG_DLY, PG_SPC, PG_BUS, PG_GLO, PG_GLO2,
-       PG_PERF, PG_LFO, PG_SMOD, PG_MOD2, PG_UNI, NPG };
+       PG_PERF, PG_LFO, PG_SMOD, PG_MOD2, PG_UNI, PG_MIX, NPG };
 static const char *const PAGE_NAME[NPG] = {"OSC", "TONE", "MOD", "ENV", "SOUND", "SWEEP", "PERF", "ENV",
-                                           "DELAY", "SPACE", "BUS", "GLOBAL", "TRANSPOSE", "PERFORM", "LFO", "STEP MOD", "INDEX", "UNISON"};
-#define NPGI 13 /* EDIT 0-1, SEL 2-4, ENV 5, LFO 6, FX 7-10, GLO 11-12 */
-static const uint8_t SLIST[NPGI] = {PG_OSC, PG_TONE, PG_MOD, PG_MOD2, PG_UNI, PG_ENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_SMOD, PG_GLO, PG_GLO2};
-static const uint8_t DLIST[NPGI] = {PG_DSND, PG_DSWP, PG_DPRF, PG_DPRF, PG_DPRF, PG_DENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_SMOD, PG_GLO, PG_GLO2};
+                                           "DELAY", "SPACE", "BUS", "GLOBAL", "TRANSPOSE", "PERFORM", "LFO", "STEP MOD", "INDEX", "UNISON", "MIX"};
+#define NPGI 14 /* EDIT 0-1, SEL 2-4, ENV 5, LFO 6, FX 7-11, GLO 12-13 */
+static const uint8_t SLIST[NPGI] = {PG_OSC, PG_TONE, PG_MOD, PG_MOD2, PG_UNI, PG_ENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_SMOD, PG_GLO, PG_GLO2};
+static const uint8_t DLIST[NPGI] = {PG_DSND, PG_DSWP, PG_DPRF, PG_DPRF, PG_DPRF, PG_DENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_SMOD, PG_GLO, PG_GLO2};
+#define FX0 7
+#define FX1 11
+#define GLO0 12
 static const char *const DEST_NAME[9] = {"OFF", "FILTER", "INDEX", "PITCH", "LEVEL", "PAN", "DELAY", "DRM PIT", "DRM LVL"};
 static const char *const DEST3[9] = {"OFF", "FLT", "IDX", "PIT", "LVL", "PAN", "DLY", "DPT", "DLV"};
 #define X_VOL 200
 #define X_LEN 201
 #define X_TSHIFT 202
+#define X_SLEV 203
+#define X_DLEV 204
+#define X_CH 205 /* the selected lane's level, or the selected drum's volume */
+#define X_MAST 206
 #define D(p) (100 + (p))
 static const uint8_t PAGE_SLOT[NPG][4] = {
   {K_ALGO, K_RATIO, K_INDEX, K_FB},       {K_CUT, K_CONTOUR, K_RESO, K_DRIVE},  {K_MATK, K_MDEC, K_MEND, K_MVEL},
@@ -1281,7 +1315,9 @@ static const uint8_t PAGE_SLOT[NPG][4] = {
   {K_SSD, K_SSS, K_SDD, K_SDS},           {K_BPM, K_SWING, K_SCALE, K_ROOT},    {K_TLEN, K_TEVERY, K_TCUR, X_TSHIFT},
   {K_INT, K_KIT, K_THROW, K_FILT},        {K_LDEST, K_LRATE, K_LDEPTH, K_LSHAPE},
   {K_MSRC, K_MDEST, K_MSHAPE, K_MDEPTH},  {K_KTRK, K_MLOOP, K_OP3, K_DRIFT},     {K_UNI, K_UDET, K_USPR, K_UMIX},
+  {X_SLEV, X_DLEV, X_CH, X_MAST},
 };
+static const int16_t DB10[128] = {-999, -400, -340, -305, -280, -260, -244, -231, -219, -209, -200, -192, -184, -177, -171, -165, -159, -154, -149, -144, -140, -136, -132, -128, -124, -120, -117, -114, -111, -108, -105, -102, -99, -96, -94, -91, -89, -86, -84, -82, -80, -77, -75, -73, -71, -69, -67, -66, -64, -62, -60, -58, -57, -55, -54, -52, -50, -49, -47, -46, -44, -43, -42, -40, -39, -37, -36, -35, -33, -32, -31, -30, -29, -27, -26, -25, -24, -23, -22, -20, -19, -18, -17, -16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -4, -3, -2, -1, 0, 1, 2, 3, 3, 4, 5, 6, 7, 7, 8, 9, 10, 11, 11, 12, 13, 14, 14, 15, 16, 17, 17, 18, 19, 19, 20, 21}; /* level 0-127 in tenths of a dB, 100 = 0 dB */
 static const uint8_t NOISE_SND[4] = {D(P_IDX), D(P_CAR), D(P_RAT), 255};
 
 static int8_t white_of[KEY_COUNT], black_of[KEY_COUNT];
@@ -1433,8 +1469,8 @@ static void draw_head(void) {
     int n = 1, at = 0;
     if (pgi <= 1) n = 2, at = pgi;
     else if (pgi <= 4) n = mode ? 1 : 3, at = mode ? 0 : pgi - 2;
-    else if (pgi >= 7 && pgi <= 10) n = 4, at = pgi - 7;
-    else if (pgi >= 11) n = 2, at = pgi - 11;
+    else if (pgi >= FX0 && pgi <= FX1) n = FX1 - FX0 + 1, at = pgi - FX0;
+    else if (pgi >= GLO0) n = 2, at = pgi - GLO0;
     if (n > 1) {
       for (int i = 0; i < n; i++) disk(x + 3 + i * 8, 9, 2, i == at ? C_TEXT : C_DIM);
       x += n * 8 + 4;
@@ -1776,6 +1812,27 @@ static int get_cell(int i, const char **label, char *val, const char **unit, int
   }
   int id = cell_slot(i);
   if (id == 255) return 0;
+  if (id >= X_SLEV && id <= X_MAST) {
+    static const char *const ML[4] = {"SYNTH", "DRUMS", "LANE", "MASTER"};
+    int v = id == X_SLEV ? S.mix[0] : id == X_DLEV ? S.mix[1] : id == X_MAST ? S.mix[2] : mode ? S.vol[track] : S.llev[lane];
+    *label = id == X_CH && mode ? TRACK_NAME[track] : ML[id - X_SLEV];
+    if (id == X_CH && mode) {
+      put_int(val, v), *unit = "%", *norm = v;
+    } else if (!v) {
+      put(val, "OFF");
+    } else {
+      int t = DB10[v], a = t < 0 ? -t : t;
+      char *d = val;
+      if (t > 0) *d++ = '+';
+      if (t < 0) *d++ = '-';
+      d = put_int(d, a / 10);
+      *d++ = '.';
+      put_int(d, a % 10);
+      *unit = "DB";
+    }
+    if (!(id == X_CH && mode)) *norm = v * 100 / 127;
+    return 1;
+  }
   if (id == X_TSHIFT) {
     int v = S.tseq[S.k[K_TCUR]];
     put_signed(val, v), *unit = "ST", *label = "SHIFT", *norm = (v + 7) * 100 / 14;
@@ -2843,6 +2900,71 @@ static void pic_glo2(void) {
   text(10, 146, b, KC[1], FONT_SMALL);
 }
 
+/* ---- MIX: two big faders (synth, drums), a small one for every lane and drum, and the master with its meter.
+ * The selected lane or drum is lit; the meters move with what plays */
+#define MIXB 146 /* the faders' floor */
+static uint16_t mt_s, mt_d, mt_o; /* meters, falling */
+static uint8_t lim_show;
+static int lvl_h(int v, int full) { return v * full / 127; }
+static void mix_fader(int x, int w, int full, int v, uint16_t c, int unity) {
+  rect(x, MIXB - full, w, full, C_PANEL);
+  int h = lvl_h(v, full);
+  if (h) rect(x, MIXB - h, w, h, c);
+  if (unity) rect(x - 2, MIXB - lvl_h(100, full), w + 4, 1, C_DIM);
+}
+static int meter_h(uint16_t pk, int full) { /* the loudest sample, on a dB-like curve: top = full scale */
+  int h = 0;
+  uint32_t p = pk;
+  while (p > 64 && h < 16) p >>= 1, h += 2; /* 6 dB a step */
+  if (p > 45) h++;
+  return h * full / 19;
+}
+static void mix_meter(int x, int full, uint16_t pk, uint16_t c) {
+  int h = meter_h(pk, full);
+  rect(x, MIXB - full, 4, full - h, C_BG);
+  if (h) rect(x, MIXB - h, 4, h, c);
+}
+static void mix_meters(void) {
+  uint16_t s = pk_syn, d = pk_drm, o = pk_out;
+  pk_syn = pk_drm = pk_out = 0;
+  mt_s = s > mt_s ? s : mt_s - (mt_s >> 3);
+  mt_d = d > mt_d ? d : mt_d - (mt_d >> 3);
+  mt_o = o > mt_o ? o : mt_o - (mt_o >> 3);
+  mix_meter(32, 110, mt_s, KC[0]);
+  mix_meter(68, 110, mt_d, KC[1]);
+  mix_meter(226, 110, mt_o, mt_o > 25000 ? C_PINK : KC[3]);
+  uint8_t lim = limiting;
+  limiting = 0;
+  if (lim != lim_show) {
+    lim_show = lim;
+    capsule(196, 148, 40, 16, 6, lim ? C_PINK : C_BG);
+    center(196, 40, 148, "LIMIT", lim ? C_BG : C_BG, FONT_SMALL);
+  }
+}
+static void pic_mix(void) {
+  mix_fader(16, 14, 110, S.mix[0], KC[0], 1);
+  mix_fader(52, 14, 110, S.mix[1], KC[1], 1);
+  text(10, 148, "SYN", KC[0], FONT_SMALL);
+  text(46, 148, "DRM", KC[1], FONT_SMALL);
+  text(92, 22, "LANES", C_DIM, FONT_SMALL);
+  for (int l = 0; l < LANES; l++) { /* the lanes */
+    int x = 88 + l * 8, sel = !mode && l == lane;
+    mix_fader(x, 5, 90, S.llev[l], sel ? C_TEXT : mix565(C_PANEL, LANE_COL[l], 190), 0);
+    if (sel) rect(x, MIXB + 3, 5, 2, KC[2]);
+  }
+  text(154, 22, "DRUMS", C_DIM, FONT_SMALL);
+  for (int t = 0; t < TRACKS; t++) { /* the drums: their volumes */
+    int x = 156 + t * 8, sel = mode && t == track;
+    mix_fader(x, 5, 90, S.vol[t] * 127 / 100, sel ? C_TEXT : mix565(C_PANEL, TRACK_COL[t], 190), 0);
+    if (sel) rect(x, MIXB + 3, 5, 2, KC[2]);
+  }
+  rect(88, MIXB - lvl_h(100, 90), 102, 1, C_LINE2);
+  mix_fader(210, 14, 110, S.mix[2], KC[3], 1);
+  text(202, 22, "OUT", KC[3], FONT_SMALL);
+  lim_show = 255;
+  mix_meters();
+}
+
 /* ---- the steps of the lane or track, under every picture */
 static void draw_mini(void) {
   const bank_t *b = CB();
@@ -2895,6 +3017,7 @@ static void draw_pic(void) {
     case PG_GLO2: pic_glo2(); break;
     case PG_MOD2: pic_mod2(); break;
     case PG_UNI: pic_uni(); break;
+    case PG_MIX: pic_mix(); break;
     case PG_DSND: pic_drum(); break;
     case PG_DSWP: pic_dswp(); break;
     case PG_DPRF: pic_dprf(); break;
@@ -2923,6 +3046,7 @@ static void page_anim(void) {
       an_prev = an_u;
       break;
     case PG_LFO: lfo_mark(); break;
+    case PG_MIX: mix_meters(); break;
     case PG_DLY:
       if (S.k[K_DMODE]) break;
       idx = playing ? (int)(pulses % 6u) : -1;
@@ -3020,6 +3144,13 @@ static void edit_slot(int id, int d) {
     edit_k(id, d);
   } else if (id == X_VOL) {
     S.vol[track] = (uint8_t)clampi(S.vol[track] + d, 0, 100);
+  } else if (id >= X_SLEV && id <= X_MAST) {
+    if (id == X_CH && mode) S.vol[track] = (uint8_t)clampi(S.vol[track] + d, 0, 100);
+    else {
+      uint8_t *p = id == X_SLEV ? &S.mix[0] : id == X_DLEV ? &S.mix[1] : id == X_MAST ? &S.mix[2] : &S.llev[lane];
+      *p = (uint8_t)clampi(*p + d, 0, 127);
+    }
+    dirty |= D_MAIN;
   } else if (id == X_TSHIFT) {
     int c = S.k[K_TCUR];
     S.tseq[c] = (int8_t)clampi(S.tseq[c] + sgn(d), -7, 7);
@@ -3134,7 +3265,7 @@ static void randomize_track(int t) {
 }
 
 static bank_t undo_bank;
-static uint8_t undo_head[HEAD_SIZE], undo_smute[16];
+static uint8_t undo_head[HEAD_SIZE], undo_smute[16], undo_mix[12];
 static uint8_t undo_ok, undo_i, undo_redo, undo_kind; /* kind 0 a bank, 1 the sound and song */
 static void cpy(void *d, const void *src, uint32_t n) {
   uint8_t *a = (uint8_t *)d;
@@ -3156,6 +3287,7 @@ static void snapshot_head(int gesture) { /* before a sound or song edit: once pe
   last_g = gesture, last_at = now;
   cpy(undo_head, &S, HEAD_SIZE);
   cpy(undo_smute, S.song_mute, 16);
+  cpy(undo_mix, S.mix, 12);
   undo_ok = 1, undo_redo = 0, undo_kind = 1;
 }
 static void swap_bytes(uint8_t *a, uint8_t *b, uint32_t n) {
@@ -3173,6 +3305,7 @@ static void undo(void) {
     uint8_t x = S.xy[0], y = S.xy[1];
     swap_bytes(undo_head, (uint8_t *)&S, HEAD_SIZE);
     swap_bytes(undo_smute, S.song_mute, 16);
+    swap_bytes(undo_mix, S.mix, 12);
     S.xy[0] = x, S.xy[1] = y;
     apply_morph();
     clock_tempo((uint32_t)S.k[K_BPM] * 100u);
@@ -3767,9 +3900,14 @@ void setup(void) {
     }
   if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) {
     say("RESTORED");
-  } else if (settings_load(&S, OLD07_SIZE) == 0 && S.magic == MAGIC_07) { /* a 0.7 save: keep it, add 0.8's parts */
+  } else if (settings_load(&S, OLD08_SIZE) == 0 && S.magic == MAGIC_08) { /* a 0.8 save: keep it, add the mix */
+    S.magic = MAGIC;
+    mix_defaults();
+    say("RESTORED FROM 0.8");
+  } else if (settings_load(&S, OLD07_SIZE) == 0 && S.magic == MAGIC_07) { /* a 0.7 save: keep it, add the rest */
     S.magic = MAGIC;
     fill(S.song_mute, 0, sizeof S - OLD07_SIZE);
+    mix_defaults();
     say("RESTORED FROM 0.7");
   } else {
     init_all();
@@ -3953,10 +4091,10 @@ void loop(void) {
         inst_view();
         dirty = D_ALL;
       } else if (l == L_FX) {
-        int fx = view == V_PAGE && pgi >= 7 && pgi <= 10;
-        set_pgi(fx ? (pgi == 10 ? 7 : pgi + 1) : 7);
+        int fx = view == V_PAGE && pgi >= FX0 && pgi <= FX1;
+        set_pgi(fx ? (pgi == FX1 ? FX0 : pgi + 1) : FX0);
       } else {
-        page_button(11, 12);
+        page_button(GLO0, GLO0 + 1);
       }
     }
   }
@@ -4308,7 +4446,7 @@ void loop(void) {
   led_button(BTN_EDIT, inst && pgi <= 1);
   led_button(BTN_SEL, inst && pgi >= 2 && pgi <= 4);
   led_button(BTN_ENV, inst && pgi == 5);
-  led_button(BTN_FX, (inst && pgi >= 7 && pgi <= 10) || lay_drawn == L_FX);
+  led_button(BTN_FX, (inst && pgi >= FX0 && pgi <= FX1) || lay_drawn == L_FX);
   led_button(BTN_LFO, inst && pgi == 6);
   led_button(BTN_GLO, inst && (pg == PG_GLO || pg == PG_GLO2));
   led_button(BTN_OCT_DOWN, !mode && !spage);
