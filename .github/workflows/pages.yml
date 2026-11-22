@@ -17,6 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./fm1 build
+      - name: Look up crash addresses (set in the step)
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import re
+          lines = open('build/fm1/firmware.dis').read().split('\n')
+          for want in ['200563c', '2005494']:
+              fn = '?'
+              for i, l in enumerate(lines):
+                  if re.match(r'^[0-9a-f]+ <.*>:$', l): fn = l
+                  if l.strip().startswith(want + ':'):
+                      print('=====', want, 'in', fn)
+                      print('\n'.join(lines[max(0, i - 40):i + 6]))
+                      break
+          PY
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
