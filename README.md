@@ -7,8 +7,9 @@ fractional ratios and noise types added from Fors FMS. Made with [foma](https://
 
 **Try it in the browser, and install it on the FM-1 from Chrome or Edge:** <https://sunjaculley.github.io/orbit-drift-fm1/>
 
-This is the first pass: the core of the plan, playable end to end. Song chain, snapshots, morph path recording,
-the transpose sequence, the four-tap echo field and unison come next.
+Version 0.7 adds the song chain, snapshots, morph path recording, the transpose sequence, the echo field, unison,
+a second lock set, trigless steps, playing the synth from the keys, FILL, knob recording and restore at power-on.
+Settings from 0.6 are reset once (the stored layout changed).
 
 ## Playing it
 
@@ -19,20 +20,25 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | Control | What it does |
 | --- | --- |
 | SEQ | The steps (lanes or drum pads). From the steps: switch SYNTH / DRUMS. Hold SEQ + white key 1-4: bank A-D (while playing, at the next bar) |
-| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / STEP MOD · GLOBAL / GLOBAL 2. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
-| LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, or the DELAY time. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
+| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD / INDEX / UNISON · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / STEP MOD · GLOBAL / TRANSPOSE. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
+| LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz, or synced from 4 bars to 1/32) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, the DELAY time, or the drums' pitch or level. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
 | SELECT | Pick the lane or the track (lanes sound their note). With steps held: trig condition |
 | ALGORITHM / PRESETS | The morph, on every page: X and Y of a puck that blends the four sounds in corners A-D. Turn a sound knob with the puck on a corner and that corner changes; turn it anywhere else and all four shift together, so no edit is lost |
-| HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SYSTEM (CPU, voices, load history) |
+| HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SONG. Again: SYSTEM (CPU, voices, load history) |
 | ARP | PERFORM |
-| Hold FX | Effects on the white keys while held: 1 freeze, 2 echo throw, 3 space throw, 4 filter low, 5 filter high, 6 thin, 7 busy, 8 repeat; 13-16 jump the puck to corners A-D. Black keys mute lanes (synth) or tracks (drums). KNOB1-4: the Perform macros |
+| Hold FX | Effects on the white keys while held: 1 freeze, 2 echo throw, 3 space throw, 4 filter low, 5 filter high, 6 thin, 7 busy, 8 repeat, 9 FILL (steps with the FILL condition play); 13-16 jump the puck to corners A-D. Black keys mute lanes (synth) or tracks (drums). KNOB1-4: the Perform macros |
 | Hold SEQ | 1-4 bank A-D (at the next bar while playing); 5 clear, 6 reverse, 7 / 8 shift, 9 new rhythm, 10 cook (a small change each press), 11 double, 12 half, 13 copy, 14 paste. KNOB1 length, KNOB2 hits (spread evenly: Euclidean), KNOB3 rotate, KNOB4 swing |
-| Hold GLO | 1 tap tempo, 2 restart from the top, 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
+| Hold GLO | 1 tap tempo, 2 restart from the top, 3 MIDI clock sync on/off, 4 KEYS (white keys play the synth in the scale; with REC while playing, a note lands on the lane of that degree), 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
 | Hold LFO | Turn any knob: the change springs back when LFO is let go |
 | Hold SAVE | Undo the last edit or tool (again: redo) |
+| REC with steps held | Synth: trigless (the step moves the note without a new one, drawn hollow) |
+| SEL with steps held | Lock set B. Synth: WAIT (microtiming in sixths of a step), ECHOES, LADDER (same, up, down, random), FADE. Drums: WAIT, ECHO, ECHO DECAY, PROBABILITY |
+| REC while playing | On a sound page, turning a drum knob (or the synth's INDEX) writes a lock on the step under the playhead |
 | PLAY · REC · SAVE | Start, stop · live record (drums: tap a track key while playing) · store in flash (when stopped). SAVE + D#5: INIT |
 
-Holding FX, SEQ or GLO shows a map of the keys and what each does, and the knob strip shows the layer's knobs. A quick tap is still the page button.
+Holding FX, SEQ or GLO shows a map of the keys and what each does, and the knob strip shows the layer's knobs. A quick tap is still the page button. Hold the layer's button and press OCT+ to keep the layer open; tap the button to close it.
+
+Changes are saved by themselves when the FM-1 is stopped and left alone for 10 s (at most once a minute), and come back at power-on.
 
 **Synth.** White keys are the steps of the selected lane: tap cycles the note length (short, medium, long, longest,
 off). OCT- / OCT+ reach steps 1-16 / 17-32. Hold steps and turn KNOB1-4 to lock PITCH, VELOCITY, INDEX and SEND;
@@ -48,11 +54,21 @@ through the tracks. Hold F#5 and tap a lane or track key to mute it.
 **Perform.** KNOB1-4: drum INTENSITY (below centre thins the beat, above adds ghost hits), KIT (shorter / longer,
 softer / brighter), FX THROW (more of everything into the delay and the space) and FILTER. F#3-C#4 jump the puck
 to corners A-D; SAVE + one copies the sound you hear into that corner; D#5 centres the puck. White keys 9-13 mute the drum tracks, 14 the synth, 15 freezes
-the delay while held, 16 turns everything back on.
+the delay while held, 16 turns everything back on. White keys 1-8 are snapshots (puck, macros, mutes): SAVE + key stores, hold a key to
+play it, let go to return. REC records the puck's path (up to 8 bars) while playing; REC again plays it back in a
+loop (moving the puck pauses it, REC resumes); hold REC 1 s to clear. The path is not stored.
+
+**Song.** HOME twice. White keys 1-4 add a block of bank A-D; KNOB1 picks a block, KNOB2 its bank, KNOB3 its
+repeats in bars, KNOB4 turns the song on. D#5 deletes the block. With the song on, PLAY runs the chain in a loop.
+
+**Index, unison, echo field, transpose.** SEL again: INDEX (key tracking, mod envelope loop, the third operator's
+depth, drift) and UNISON (voices 1-3, detune, spread, mix). DELAY MODE FIELD swaps the twin delay for four taps:
+SIZE, GRAVITY (how long repeats last) and TRAIL. TRANSPOSE (GLO twice): up to 8 stops that shift every lane by
+scale steps every 1-8 bars; KNOB3 picks a stop, KNOB4 its shift.
 
 ## For the FM-1
 
-- **CPU.** Up to 6 drum voices and 4-10 synth voices. The synth starts at 6; the meter in the header (and on the
+- **CPU.** Up to 6 drum voices and 4-10 synth voices. The synth starts at 8; the meter in the header (and on the
   SYSTEM page) adds two when the chip has room for 3 s and takes two away when it runs over 80%.
 - **Memory.** The twin delay uses 128 KiB and the space about 31 KiB of the FM-1's buffer pool; four banks of
   patterns and the sounds take 10.3 of the 12 KB of settings.
