@@ -1777,7 +1777,7 @@ static void draw_mutes(void) {
 }
 
 /* ================================================================ pictures: one drawing a page, rows 20-165, on the
- * instrument's tint (violet synth, coral drums, mint effects). Whatever KNOB i moves is drawn in KC[i], and one thing
+ * black background. Whatever KNOB i moves is drawn in KC[i], and one thing
  * on most pages moves: page_anim() redraws only that small part. */
 static int an_prev = -1, an_u, an_r;
 static uint8_t an_lvl[128], an_notes, smw[128], dey[224], dec_[224];
@@ -2331,8 +2331,7 @@ static void draw_mini(void) {
 
 static void draw_pic(void) {
   int pg = cur_page();
-  PBG = pg == PG_GLO || pg == PG_GLO2 ? C_BG : pg >= PG_DLY && pg <= PG_BUS ? RGB(8, 28, 22) :
-        pg == PG_SMOD ? RGB(8, 28, 22) : pg >= PG_DSND && pg <= PG_DENV ? RGB(34, 12, 10) : RGB(16, 12, 34);
+  PBG = C_BG;
   rect(0, 19, SCREEN_W, 147, PBG);
   an_prev = -1;
   switch (pg) {
