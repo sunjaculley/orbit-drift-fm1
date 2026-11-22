@@ -9,7 +9,8 @@ fractional ratios and noise types added from Fors FMS. Made with [foma](https://
 
 Version 0.7 adds the song chain, snapshots, morph path recording, the transpose sequence, the echo field, unison,
 a second lock set, trigless steps, playing the synth from the keys, FILL, knob recording and restore at power-on.
-Settings from 0.6 are reset once (the stored layout changed).
+Version 0.8 adds MIDI note input, held notes in KEYS, drum trigless steps, knob recording on the lanes, saved morph
+paths, song mutes per block and undo for sound and song edits. A 0.7 save carries over.
 
 ## Playing it
 
@@ -28,12 +29,13 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | ARP | PERFORM |
 | Hold FX | Effects on the white keys while held: 1 freeze, 2 echo throw, 3 space throw, 4 filter low, 5 filter high, 6 thin, 7 busy, 8 repeat, 9 FILL (steps with the FILL condition play); 13-16 jump the puck to corners A-D. Black keys mute lanes (synth) or tracks (drums). KNOB1-4: the Perform macros |
 | Hold SEQ | 1-4 bank A-D (at the next bar while playing); 5 clear, 6 reverse, 7 / 8 shift, 9 new rhythm, 10 cook (a small change each press), 11 double, 12 half, 13 copy, 14 paste. KNOB1 length, KNOB2 hits (spread evenly: Euclidean), KNOB3 rotate, KNOB4 swing |
-| Hold GLO | 1 tap tempo, 2 restart from the top, 3 MIDI clock sync on/off, 4 KEYS (white keys play the synth in the scale; with REC while playing, a note lands on the lane of that degree), 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
+| Hold GLO | 1 tap tempo, 2 restart from the top, 3 MIDI clock sync on/off, 4 KEYS (white keys play the synth in the scale, held as long as the key is; with REC while playing, a note lands on the lane of that degree), 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
 | Hold LFO | Turn any knob: the change springs back when LFO is let go |
-| Hold SAVE | Undo the last edit or tool (again: redo) |
-| REC with steps held | Synth: trigless (the step moves the note without a new one, drawn hollow) |
+| Hold SAVE | Undo the last edit: a pattern edit or tool, or a sound or song edit (a knob gesture counts as one). Again: redo |
+| REC with steps held | Trigless, drawn hollow. Synth: the step moves the sounding note without a new one. Drums: the step changes the ringing hit (its pitch, ratio, index or filter) |
 | SEL with steps held | Lock set B. Synth: WAIT (microtiming in sixths of a step), ECHOES, LADDER (same, up, down, random), FADE. Drums: WAIT, ECHO, ECHO DECAY, PROBABILITY |
-| REC while playing | On a sound page, turning a drum knob (or the synth's INDEX) writes a lock on the step under the playhead |
+| REC while playing | On the lanes, KNOB1-4 write PITCH, VEL, INDEX and SEND on the step under the playhead. On a sound page, a drum knob (or the synth's INDEX) does the same |
+| MIDI in (USB, the 3.5 mm jack, Bluetooth) | Notes play the selected lane's sound, held until note off. Channel 10 plays the drums (GM: 36 kick, 38 snare, 42 hat, 39 clap, toms perc) |
 | PLAY · REC · SAVE | Start, stop · live record (drums: tap a track key while playing) · store in flash (when stopped). SAVE + D#5: INIT |
 
 Holding FX, SEQ or GLO shows a map of the keys and what each does, and the knob strip shows the layer's knobs. A quick tap is still the page button. Hold the layer's button and press OCT+ to keep the layer open; tap the button to close it.
@@ -56,10 +58,11 @@ softer / brighter), FX THROW (more of everything into the delay and the space) a
 to corners A-D; SAVE + one copies the sound you hear into that corner; D#5 centres the puck. White keys 9-13 mute the drum tracks, 14 the synth, 15 freezes
 the delay while held, 16 turns everything back on. White keys 1-8 are snapshots (puck, macros, mutes): SAVE + key stores, hold a key to
 play it, let go to return. REC records the puck's path (up to 8 bars) while playing; REC again plays it back in a
-loop (moving the puck pauses it, REC resumes); hold REC 1 s to clear. The path is not stored.
+loop (moving the puck pauses it, REC resumes); hold REC 1 s to clear. The path is saved with everything else.
 
 **Song.** HOME twice. White keys 1-4 add a block of bank A-D; KNOB1 picks a block, KNOB2 its bank, KNOB3 its
-repeats in bars, KNOB4 turns the song on. D#5 deletes the block. With the song on, PLAY runs the chain in a loop.
+repeats in bars, KNOB4 turns the song on. Black keys F#3-D#4 mute KICK-CLAP in the block and F#4 the synth (the
+coloured marks on each block show what plays). D#5 deletes the block. With the song on, PLAY runs the chain in a loop.
 
 **Index, unison, echo field, transpose.** SEL again: INDEX (key tracking, mod envelope loop, the third operator's
 depth, drift) and UNISON (voices 1-3, detune, spread, mix). DELAY MODE FIELD swaps the twin delay for four taps:
