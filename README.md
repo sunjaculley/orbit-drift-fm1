@@ -8,18 +8,19 @@ fractional ratios and noise types added from Fors FMS. Made with [foma](https://
 **Try it in the browser, and install it on the FM-1 from Chrome or Edge:** <https://sunjaculley.github.io/orbit-drift-fm1/>
 
 This is the first pass: the core of the plan, playable end to end. Song chain, snapshots, morph path recording,
-the transpose sequence, the step modulator, the four-tap echo field, unison and the LFO come next.
+the transpose sequence, the four-tap echo field and unison come next.
 
 ## Playing it
 
-Each page is one picture. KNOB1-4 are cyan, lime, white and orange on every page: whatever a knob moves on screen
-wears its colour, and its value shows large only while it turns. The header shows the instrument, the page, and a
-dot per page under that button.
+Each page is one picture, with the steps of the lane or track under it and the four knobs' names and values along
+the bottom. KNOB1-4 are cyan, lime, white and orange on every page: whatever a knob moves in the picture wears its
+colour. A pink ring around a knob's dot means the LFO is moving that setting; an amber ring, the step mod.
 
 | Control | What it does |
 | --- | --- |
 | SEQ | The steps (lanes or drum pads). From the steps: switch SYNTH / DRUMS. Hold SEQ + white key 1-4: bank A-D (while playing, at the next bar) |
-| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS · GLOBAL / GLOBAL 2. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
+| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / STEP MOD · GLOBAL / GLOBAL 2. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
+| LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, or the DELAY time. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
 | SELECT | Pick the lane or the track (lanes sound their note). With steps held: trig condition |
 | PRESETS / ALGORITHM | The morph, on every page: PRESETS orbits the puck past the four stored sounds A-D, ALGORITHM pulls it toward the centre, where all four blend |
 | HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SYSTEM (CPU, voices, load history) |
