@@ -2174,10 +2174,10 @@ static void draw_sys(void) {
       put_int(d, sec_pct[i]);
       xx = text(xx, 58, b, SC[i], FONT_SMALL) + 10;
     }
-    static const char *const C1[4] = {"1 CORE", "2 CORES", "2ND RETIRED", "2ND HELD"};
+    static const char *const C1[5] = {"1 CORE", "2 CORES", "2ND RETIRED", "2ND HELD", "1 CORE"};
     int st = cpu1_state();
-    text(SCREEN_W - 12 - text_width(C1[st], FONT_SMALL), 24, C1[st], st == 1 ? C_LIME : st >= 2 ? C_PINK : C_DIM, FONT_SMALL);
-    if (cpu1_option(-1) != (st == 1 || st >= 2)) text(SCREEN_W - 12 - text_width("NEXT START", FONT_SMALL), 40, "NEXT START", C_AMBER, FONT_SMALL);
+    text(SCREEN_W - 12 - text_width(C1[st], FONT_SMALL), 24, C1[st], st == 1 ? C_LIME : st == 2 || st == 3 ? C_PINK : C_DIM, FONT_SMALL);
+    if (st != 4 && cpu1_option(-1) != (st >= 1 && st <= 3)) text(SCREEN_W - 12 - text_width("NEXT START", FONT_SMALL), 40, "NEXT START", C_AMBER, FONT_SMALL);
   }
   int nd = 0, ns = 0;
   for (int i = 0; i < 16; i++) {
@@ -4508,6 +4508,10 @@ void loop(void) {
     if (button_held(BTN_LFO)) mom_used = 1;
     if (view == V_SONG) {
       song_edit(k, d);
+      continue;
+    }
+    if (view == V_SYS && k == 3 && cpu1_state() == 4) {
+      say("2ND CORE: NOT IN THIS BUILD");
       continue;
     }
     if (view == V_SYS && k == 3) { /* KNOB4 on SYSTEM: the second core, from the next start */

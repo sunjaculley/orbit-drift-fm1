@@ -203,7 +203,7 @@ int platform_last_crashed(void); /* 1: the last run ended in a crash or the watc
  * retires it and goes on with one core until power-off. Jobs only from audio() */
 int cpu1_run(void (*fn)(uint32_t), uint32_t arg); /* 1: handed over; 0: do it yourself */
 int cpu1_wait(void);                              /* 0: done; -1: retired, the job dropped (do it yourself) */
-int cpu1_state(void);  /* 0 off, 1 running, 2 retired (a misread, fault or late job), 3 held after a crash */
+int cpu1_state(void);  /* 0 off, 1 running, 2 retired (a misread, fault or late job), 3 held after a crash, 4 not built */
 int cpu1_option(int set); /* -1: read; 0 / 1: set for the next start. Returns the option */
 uint32_t cpu1_jobs(void);
 

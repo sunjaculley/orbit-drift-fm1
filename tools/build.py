@@ -211,7 +211,7 @@ def build_app(cfg):
   FW.mkdir(parents=True, exist_ok=True)
   flags = [*CFLAGS, *INCLUDES, f'-DAPP_NAME="{cfg["name"]}"', f'-DAPP_VER="{cfg["version"]}"', f'-DFELUCCA_ID="{cfg["product"]}"', *cfg["defines"]]
   objs, cmds = [], []
-  for s in [PLAT / "crt0.S", PLAT / "hal/fm1_vec.S", PLAT / "hal/fm1_isr.S", PLAT / "hal/fm1_cpu1.S"]:
+  for s in [PLAT / "crt0.S", PLAT / "hal/fm1_vec.S", PLAT / "hal/fm1_isr.S"]:
     objs.append(FW / (s.stem + ".o"))
     cmds.append(("cc", "-c", s, "-o", objs[-1]))
   for s in [PLAT / "fm1.c", *sources()]:

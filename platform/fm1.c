@@ -12,12 +12,21 @@
 
 #include <stdint.h>
 
-#define FM1_CPU1 1 /* the second core (hal/fm1_cpu1.h): off unless the app's option turns it on */
+/* The second core (hal/fm1_cpu1.h, from felucca-bsp): ported but not built. Its RAM loop calls each job in the
+ * flash, which the build's check on .ram_text refuses (tools/build.py); building it needs that check to allow the
+ * one call, a decision for the owner. FM1_CPU1 1 here, hal/fm1_cpu1.S in the build's assembly list, and that check */
+#ifndef FM1_CPU1
+#define FM1_CPU1 0
+#endif
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
 #include "fm1_guard.h"
+#if FM1_CPU1
 #include "fm1_cpu1.h"
+#else
+#define fm1_cpu1_stop() ((void)0)
+#endif
 #include "fm1_input.h"
 #include "fm1_timer.h"
 #include "fm1_lcd_hw.h"
@@ -277,11 +286,18 @@ int platform_last_crashed(void) {
 
 /* ---- the second core: an option kept in the store's last slot, read at power-on (CPU1 starts before the audio) */
 #define CPU1_OPT_MAGIC 0x4E4F3143u /* "C1ON" */
+#if FM1_CPU1
 static uint8_t cpu1_held_crash;
 int cpu1_run(void (*fn)(uint32_t), uint32_t arg) { return fm1_cpu1_run(fn, arg); }
 int cpu1_wait(void) { return fm1_cpu1_wait(); }
 int cpu1_state(void) { return fm1_cpu1_on ? 1 : cpu1_held_crash ? 3 : fm1_cpu1_gave_up ? 2 : 0; }
 uint32_t cpu1_jobs(void) { return fm1_cpu1_mb.jobs; }
+#else
+int cpu1_run(void (*fn)(uint32_t), uint32_t arg) { (void)fn, (void)arg; return 0; }
+int cpu1_wait(void) { return 0; }
+int cpu1_state(void) { return 4; } /* 4: not in this build */
+uint32_t cpu1_jobs(void) { return 0; }
+#endif
 int cpu1_option(int set) {
   uint32_t o[2] = {0, 0};
   int on = store_load(STORE_SLOTS - 1u, o, sizeof o) == 0 && o[0] == CPU1_OPT_MAGIC && o[1] == 1u;
@@ -644,6 +660,7 @@ void fm1_cstart(void) {
   }
   flash_ok = FL_JEDEC_OK(FL_FAR(fl_jedec_ram)());
   ota_boot_cleanup();
+#if FM1_CPU1
   { /* the second core: GLO held at power-on flips the option; after a crash it stays off for this start */
     int want;
     fm1_input_init();
@@ -664,6 +681,7 @@ void fm1_cstart(void) {
       fm1_cpu1_start();
     }
   }
+#endif
   lcd_init();
   lcd_fill(0, 0, 240, 240, C_BLACK);
   fm1_input_init();
