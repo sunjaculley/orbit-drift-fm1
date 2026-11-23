@@ -202,6 +202,15 @@ typedef struct {
   uint8_t pump[4]; /* depth 0-100, time 0-100, source 0 kick / 1 beat, target 0 synth / 1 synth + its sends */
 } store_t;
 static store_t S;
+/* the four Perform macros, recorded with the morph path (one entry per step, S.path_len long). Kept outside the
+ * settings (they are full): in the store's slot 0 for the working state, and in every project */
+typedef struct {
+  uint32_t magic;
+  uint8_t mac[128][4]; /* INTENSITY, KIT, THROW, FILTER */
+} motion_t;
+static motion_t M;
+#define SLOT_WORK 0u /* the store: 0 the working motion, 1-8 projects, 11 the platform's (the second core's option) */
+#define PROJECTS 8
 static volatile uint8_t pump_hit; /* a kick (or the beat) since the pump last looked */
 #define OLD07_SIZE 11860u
 #define OLD08_SIZE 12136u
@@ -1341,7 +1350,7 @@ static void ring_dots(int cx, int cy, int r, uint16_t c) {
 /* KNOB1-4 are cyan, lime, white and orange on every page: what a knob moves on screen wears its colour */
 static const uint16_t KC[4] = {RGB(77, 225, 240), RGB(200, 242, 90), RGB(242, 242, 245), RGB(255, 138, 61)};
 
-enum { V_HOME, V_SYS, V_SYNTH, V_DRUM, V_PAGE, V_PERF, V_SONG };
+enum { V_HOME, V_SYS, V_SYNTH, V_DRUM, V_PAGE, V_PERF, V_SONG, V_PROJ };
 enum { PG_OSC, PG_TONE, PG_MOD, PG_ENV, PG_DSND, PG_DSWP, PG_DPRF, PG_DENV, PG_DLY, PG_SPC, PG_BUS, PG_GLO, PG_GLO2,
        PG_PERF, PG_LFO, PG_SMOD, PG_MOD2, PG_UNI, PG_MIX, PG_PUMP, NPG };
 static const char *const PAGE_NAME[NPG] = {"OSC", "TONE", "MOD", "ENV", "SOUND", "SWEEP", "PERF", "ENV",
@@ -1385,6 +1394,7 @@ static int black_key[11];
 enum { BK_RND = 8, BK_CLR = 9, BK_F5 = 10, BK_COPY = 5, BK_PASTE = 6, BK_CLRLOCK = 7 };
 
 static uint8_t view = V_HOME, drawn_view = 255, mode, lane, track, spage, rec, playing, pgi, lockset, keys_on, song_cur;
+static uint8_t proj_sel, proj_act, proj_arm, proj_used, proj_now = 255; /* PROJECTS: slot, action, armed, used slots, last */
 static uint32_t held;
 static uint8_t held_used, seq_used, save_used, safe_mode;
 static uint32_t rnd_since, f5_since, puck_say;
@@ -1524,9 +1534,9 @@ static void draw_head(void) {
   rect(0, 0, SCREEN_W, 18, C_BG);
   capsule(3, 1, 30, 16, 8, mode ? C_CORAL : C_VIO);
   center(3, 30, 1, mode ? "DRM" : "SYN", C_BG, FONT_SMALL);
-  const char *nm = view == V_HOME ? "ORBIT" : view == V_SYS ? "SYSTEM" : view == V_SONG ? "SONG" : PAGE_NAME[cur_page()];
+  const char *nm = view == V_HOME ? "ORBIT" : view == V_SYS ? "SYSTEM" : view == V_SONG ? "SONG" : view == V_PROJ ? "PROJECTS" : PAGE_NAME[cur_page()];
   int x = text(38, 1, nm, C_TEXT, FONT_SMALL) + 4;
-  if (view >= V_SYNTH && view != V_PERF) {
+  if (view >= V_SYNTH && view != V_PERF && view < V_SONG) {
     int n = 1, at = 0;
     if (pgi <= 1) n = 2, at = pgi;
     else if (pgi <= 4) n = mode ? 1 : 3, at = mode ? 0 : pgi - 2;
@@ -1706,6 +1716,7 @@ static int first_held(void) {
 
 static int path_state(void);
 static void path_ctx(char *b);
+static void proj_ctx(char *b);
 static void draw_ctx(int y) {
   char b[40], *d;
   rect(0, y, SCREEN_W, 17, C_BG);
@@ -1715,6 +1726,11 @@ static void draw_ctx(int y) {
   }
   msg[0] = 0;
   const bank_t *bk = CB();
+  if (view == V_PROJ) {
+    proj_ctx(b);
+    center(0, SCREEN_W, y, b, proj_arm ? C_AMBER : C_DIM, FONT_SMALL);
+    return;
+  }
   if (view == V_SONG) {
     d = put(b, S.k[K_SONG] ? "SONG ON" : "SONG OFF");
     if (S.k[K_SONG] && playing && S.song_n) {
@@ -1857,6 +1873,13 @@ static int get_cell(int i, const char **label, char *val, const char **unit, int
     if (i == 1) put(val, DIR_NAME[ln->dir]), *norm = ln->dir * 33;
     if (i == 2) put_int(val, ln->deg + 1), *norm = ln->deg * 100 / 13;
     if (i == 3) put_signed(val, ln->oct - 2), *norm = ln->oct * 25;
+    return 1;
+  }
+  if (view == V_PROJ) {
+    static const char *const AN[3] = {"LOAD", "SAVE", "CLEAR"};
+    if (i == 0) *label = "SLOT", put_int(val, proj_sel + 1), *norm = proj_sel * 100 / 7;
+    else if (i == 1) *label = "ACTION", put(val, AN[proj_act]), *norm = proj_act * 50;
+    else return 0;
     return 1;
   }
   if (view == V_SONG) {
@@ -3534,6 +3557,89 @@ static void song_key(int w, int bk) {
   dirty |= D_MAIN | D_VALS | D_CTX;
 }
 
+/* ================================================================ PROJECTS: 8 slots in the store, each the whole
+ * state (settings, banks, song, snapshots, the morph path) and the recorded macros. SLOT picks, ACTION says what OCT+
+ * does; a second OCT+ confirms anything that replaces something */
+typedef struct {
+  uint32_t magic, size;
+  store_t s;
+  motion_t m;
+} project_t;
+static project_t PJ;
+static void proj_scan(void) {
+  proj_used = 0;
+  for (int i = 0; i < PROJECTS; i++)
+    if (store_len(1u + (uint32_t)i) == (int)sizeof(project_t)) proj_used |= (uint8_t)(1u << i);
+}
+static void proj_ctx(char *b) {
+  static const char *const DO[3] = {"LOADS", "SAVES", "CLEARS"};
+  char *d = put(b, proj_arm ? "OCT+ AGAIN: " : "SLOT ");
+  if (proj_arm) d = put(d, proj_act == 0 ? "LOAD " : proj_act == 1 ? "SAVE OVER " : "CLEAR ");
+  d = put_int(d, proj_sel + 1);
+  if (!proj_arm) {
+    d = put(d, ((proj_used >> proj_sel) & 1) ? " USED  OCT+ " : " EMPTY  OCT+ ");
+    put(d, DO[proj_act]);
+  }
+}
+static void draw_proj(void) {
+  rect(0, 19, SCREEN_W, 166, C_BG);
+  for (int i = 0; i < PROJECTS; i++) {
+    int x = 8 + (i % 4) * 57, y = 28 + (i / 4) * 66, used = (proj_used >> i) & 1, sel = i == proj_sel;
+    capsule(x, y, 52, 58, 8, used ? C_PANEL2 : C_PANEL);
+    if (sel) frame(x, y, 52, 58, KC[0]);
+    char nb[3];
+    put_int(nb, i + 1);
+    center(x, 52, y + 6, nb, used ? C_TEXT : C_DIM, FONT_BIG);
+    center(x, 52, y + 40, used ? "SAVED" : "EMPTY", used ? KC[1] : C_DIM, FONT_SMALL);
+    if (i == proj_now) disk(x + 44, y + 8, 3, C_LIME);
+  }
+  center(0, SCREEN_W, 162, "WHITE 1-8 PICK  OCT- CANCELS", C_DIM, FONT_SMALL);
+}
+static void proj_capture(void) {
+  PJ.magic = MAGIC, PJ.size = sizeof(project_t);
+  cpy(&PJ.s, &S, sizeof S);
+  cpy(&PJ.m, &M, sizeof M);
+}
+static void proj_apply(void) { /* a loaded project becomes the working state */
+  cpy(&S, &PJ.s, sizeof S);
+  cpy(&M, &PJ.m, sizeof M);
+  path_rec = path_play = 0;
+  apply_morph();
+  clock_tempo((uint32_t)S.k[K_BPM] * 100u);
+  clock_follow(S.k[K_SYNC] ? MIDI_ANY : 0);
+  if (song_cur >= S.song_n) song_cur = 0;
+  dirty = D_ALL;
+}
+static uint32_t proj_armed_at;
+static void proj_do(void) { /* OCT+ on PROJECTS */
+  uint32_t slot = 1u + proj_sel, now = millis();
+  int used = (proj_used >> proj_sel) & 1;
+  int needs = used; /* loading replaces the work; saving over and clearing replace the slot */
+  if (needs && !(proj_arm && now - proj_armed_at < 3000)) {
+    proj_arm = 1, proj_armed_at = now;
+    msg[0] = 0; /* the confirm line, not an old message */
+    dirty |= D_CTX;
+    return;
+  }
+  proj_arm = 0;
+  if (proj_act == 0) {
+    if (!used) say("EMPTY: NOTHING TO LOAD");
+    else if (store_load(slot, &PJ, sizeof PJ) == 0 && PJ.magic == MAGIC && PJ.size == sizeof PJ) proj_apply(), proj_now = proj_sel, say("LOADED");
+    else say("LOAD FAILED");
+  } else if (playing) {
+    say("STOP FIRST: SAVE PAUSES SOUND");
+  } else if (proj_act == 1) {
+    proj_capture();
+    if (store_save(slot, &PJ, sizeof PJ) == 0) proj_now = proj_sel, say("SAVED TO SLOT");
+    else say("SAVE FAILED");
+  } else {
+    if (store_erase(slot) == 0) say("CLEARED");
+    if (proj_now == proj_sel) proj_now = 255;
+  }
+  proj_scan();
+  dirty |= D_MAIN | D_CTX;
+}
+
 static void set_view(int v) {
   if (view != v) view = (uint8_t)v, dirty = D_ALL;
 }
@@ -3575,6 +3681,7 @@ static void main_dirty(void) { dirty |= D_MAIN | D_CTX | D_VALS; }
 static void black_down(int bk) {
   uint32_t now = millis();
   bank_t *b = CB();
+  if (view == V_PROJ) return;
   if (view == V_SONG) {
     song_key(-1, bk);
     return;
@@ -3698,6 +3805,10 @@ static void black_down(int bk) {
 static uint16_t keys_down, keys_latched; /* KEYS: white keys held, notes latched */
 static uint8_t keys_latch;
 static void white_down(int w) {
+  if (view == V_PROJ) {
+    if (w < PROJECTS) proj_sel = (uint8_t)w, proj_arm = 0, dirty |= D_MAIN | D_CTX | D_VALS;
+    return;
+  }
   if (view == V_SONG) {
     song_key(w, -1);
     return;
@@ -3754,7 +3865,7 @@ static void white_up(int w) {
     if (w == snap_held) snap_put(&snap_live), snap_held = -1, dirty |= D_MAIN | D_VALS;
     return;
   }
-  if (view == V_SONG || (keys_on && !mode && (view == V_SYNTH || view == V_PAGE))) return;
+  if (view == V_SONG || view == V_PROJ || (keys_on && !mode && (view == V_SYNTH || view == V_PAGE))) return;
   int s = mode ? w : w + (spage ? 16 : 0);
   if (!((held >> s) & 1)) return;
   held &= ~(1u << s);
@@ -4120,6 +4231,7 @@ void setup(void) {
   } else {
     init_all();
   }
+  if (!safe_mode && (store_load(SLOT_WORK, &M, sizeof M) != 0 || M.magic != MAGIC)) fill(&M, 0, sizeof M); /* macros */
   clear(C_BG);
   clock_tempo((uint32_t)S.k[K_BPM] * 100u);
   clock_send(1);
@@ -4187,6 +4299,9 @@ static void draw_all(void) {
       break;
     case V_SONG:
       if (d & D_MAIN) draw_song();
+      break;
+    case V_PROJ:
+      if (d & D_MAIN) draw_proj();
       break;
   }
   if (view >= V_SYNTH) {
@@ -4332,7 +4447,10 @@ void loop(void) {
   if (button_held(BTN_SAVE) && !save_used && now - save_down > 600) save_used = 1, undo();
   if (button_released(BTN_SAVE) && !save_used && safe_mode) { /* after a safe start: SAVE brings the saved work back */
     safe_mode = 0;
-    if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) say("YOUR WORK IS BACK"), apply_morph();
+    if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) {
+      if (store_load(SLOT_WORK, &M, sizeof M) != 0 || M.magic != MAGIC) fill(&M, 0, sizeof M);
+      say("YOUR WORK IS BACK"), apply_morph();
+    }
     else say("NO SAVE TO LOAD");
     clock_tempo((uint32_t)S.k[K_BPM] * 100u);
     dirty = D_ALL;
@@ -4342,7 +4460,11 @@ void loop(void) {
     if (playing) say("STOP TO SAVE");
     else say(settings_save(&S, sizeof S) == 0 ? "SAVED" : "SAVE FAILED");
   }
-  if (button_pressed(BTN_HOME)) set_view(view == V_HOME ? V_SONG : view == V_SONG ? V_SYS : V_HOME);
+  if (button_pressed(BTN_HOME)) {
+    int nv = view == V_HOME ? V_SONG : view == V_SONG ? V_PROJ : view == V_PROJ ? V_SYS : V_HOME;
+    if (nv == V_PROJ) proj_scan(), proj_arm = 0;
+    set_view(nv);
+  }
   if (button_pressed(BTN_ARP)) {
     if (view == V_PERF) inst_view();
     else set_view(V_PERF);
@@ -4402,7 +4524,7 @@ void loop(void) {
       }
       held_used = 1;
     } else if (view == V_PERF) {
-      if (path_rec) path_rec = 0, path_play = path_len > 0, path_from = pulses;
+      if (path_rec) path_rec = 0, path_play = path_len > 0, path_from = pulses, M.magic = MAGIC;
       else if (path_len && !path_play) path_play = 1, path_from = pulses;
       else if (!playing) say("PRESS PLAY TO RECORD A PATH");
       else path_rec = 1, path_play = 0, path_len = 0;
@@ -4420,18 +4542,26 @@ void loop(void) {
     path_pulse = pulses;
     if (path_rec) {
       path[path_len][0] = S.xy[0], path[path_len][1] = S.xy[1];
+      M.mac[path_len][0] = (uint8_t)S.k[K_INT], M.mac[path_len][1] = (uint8_t)S.k[K_KIT];
+      M.mac[path_len][2] = (uint8_t)S.k[K_THROW], M.mac[path_len][3] = (uint8_t)S.k[K_FILT];
       if (++path_len >= 128) path_rec = 0, path_play = 1, path_from = pulses + 1;
       if (view == V_PERF) dirty |= D_CTX;
     } else if (path_play && path_len) {
       uint32_t i = (pulses - path_from) % path_len;
-      if (S.xy[0] != path[i][0] || S.xy[1] != path[i][1]) {
+      const uint8_t *mc = M.mac[i];
+      int macs = M.magic == MAGIC && (S.k[K_INT] != mc[0] || S.k[K_KIT] != mc[1] || S.k[K_THROW] != mc[2] || S.k[K_FILT] != mc[3]);
+      if (macs) S.k[K_INT] = mc[0], S.k[K_KIT] = mc[1], S.k[K_THROW] = mc[2], S.k[K_FILT] = mc[3];
+      if (S.xy[0] != path[i][0] || S.xy[1] != path[i][1] || macs) {
         S.xy[0] = path[i][0], S.xy[1] = path[i][1];
         apply_morph();
-        if (view == V_PERF) dirty |= D_MAIN | D_CTX;
+        if (view == V_PERF) dirty |= D_MAIN | D_CTX | D_VALS;
       }
     }
   }
-  if (button_pressed(BTN_OCT_UP) && lh && button_held(LBTN[lh])) { /* hold a layer's button + OCT+: it stays open */
+  if (view == V_PROJ && !lh && (button_pressed(BTN_OCT_UP) || button_pressed(BTN_OCT_DOWN))) { /* OCT+ does, OCT- cancels */
+    if (button_pressed(BTN_OCT_UP)) proj_do();
+    else proj_arm = 0, dirty |= D_CTX;
+  } else if (button_pressed(BTN_OCT_UP) && lh && button_held(LBTN[lh])) { /* hold a layer's button + OCT+: it stays open */
     lay_latch = (uint8_t)lh, lb_used[lh] = 1;
     say("LAYER KEPT: TAP TO CLOSE");
   } else if (lh) {
@@ -4510,6 +4640,13 @@ void loop(void) {
       song_edit(k, d);
       continue;
     }
+    if (view == V_PROJ) {
+      if (k == 0) proj_sel = (uint8_t)clampi(proj_sel + sgn(d), 0, PROJECTS - 1);
+      if (k == 1) proj_act = (uint8_t)clampi(proj_act + sgn(d), 0, 2);
+      proj_arm = 0;
+      dirty |= D_MAIN | D_VALS | D_CTX;
+      continue;
+    }
     if (view == V_SYS && k == 3 && cpu1_state() == 4) {
       say("2ND CORE: NOT IN THIS BUILD");
       continue;
@@ -4525,6 +4662,7 @@ void loop(void) {
       continue;
     }
     if (view == V_PERF) {
+      if (path_play && !path_rec && M.magic == MAGIC) path_play = 0, say("PATH PAUSED: REC PLAYS IT"); /* a macro turned */
       edit_k(PAGE_SLOT[PG_PERF][k], d);
       dirty |= D_MAIN;
       show_pop(k);
@@ -4631,9 +4769,12 @@ void loop(void) {
       uint32_t h = 2166136261u;
       const uint8_t *p = (const uint8_t *)&S;
       for (uint32_t i = 0; i < sizeof S; i++) h = (h ^ p[i]) * 16777619u;
+      p = (const uint8_t *)&M;
+      for (uint32_t i = 0; i < sizeof M; i++) h = (h ^ p[i]) * 16777619u;
       if (!saved_sum) saved_sum = h;
       if (h != saved_sum && !safe_mode && now - touched > 10000 && (!last_save || now - last_save > 60000)) {
-        if (settings_save(&S, sizeof S) == 0) saved_sum = h, last_save = now;
+        if (settings_save(&S, sizeof S) == 0 && (M.magic != MAGIC || store_save(SLOT_WORK, &M, sizeof M) == 0))
+          saved_sum = h, last_save = now;
       }
     }
   }
@@ -4664,6 +4805,8 @@ void loop(void) {
     int on = 0, w = white_of[k], bk = black_of[k];
     if (lay_drawn) {
       on = w >= 0 ? lay_names(lay_drawn)[w] != 0 : bk < lay_black(lay_drawn);
+    } else if (view == V_PROJ) {
+      on = w >= 0 && w < PROJECTS && (((proj_used >> w) & 1) || w == proj_sel);
     } else if (view == V_SONG) {
       on = (w >= 0 && w < BANKS) || bk == BK_CLR;
     } else if (view == V_PERF && w >= 0 && w < 8) {
@@ -4692,7 +4835,7 @@ void loop(void) {
   led_button(BTN_PLAY, playing);
   led_button(BTN_REC, rec);
   led_button(BTN_SEQ, view == V_SYNTH || view == V_DRUM);
-  led_button(BTN_HOME, view == V_HOME || view == V_SYS || view == V_SONG);
+  led_button(BTN_HOME, view == V_HOME || view == V_SYS || view == V_SONG || view == V_PROJ);
   led_button(BTN_ARP, view == V_PERF);
   int inst = view == V_PAGE;
   led_button(BTN_EDIT, inst && pgi <= 1);

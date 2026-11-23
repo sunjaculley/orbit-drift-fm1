@@ -10,8 +10,12 @@ fractional ratios and noise types added from Fors FMS. Made with [foma](https://
 Version 0.7 adds the song chain, snapshots, morph path recording, the transpose sequence, the echo field, unison,
 a second lock set, trigless steps, playing the synth from the keys, FILL, knob recording and restore at power-on.
 Version 0.8 adds MIDI note input, held notes in KEYS, drum trigless steps, knob recording on the lanes, saved morph
-paths, song mutes per block and undo for sound and song edits. Version 0.9 adds the MIX page. Saves from 0.7 and
-0.8 carry over.
+paths, song mutes per block and undo for sound and song edits. Version 0.9 adds the MIX page. 0.10 to 0.12 add the PUMP page, range rings, an output meter in the header,
+large names for stepped settings, smoothing on knob changes, KEYS latch and lights, a safe start after a crash, a CPU
+breakdown, 8 project slots and recorded macro motion. Saves from 0.7 on carry over.
+
+**Installing 0.12 uses flash that Felucca keeps its projects in** (the store from BARLINE). If you go back to
+Felucca later, its projects there are gone: back them up with Felucca's editor first.
 
 ## Playing it
 
@@ -22,15 +26,16 @@ colour. A pink ring around a knob's dot means the LFO is moving that setting; an
 | Control | What it does |
 | --- | --- |
 | SEQ | The steps (lanes or drum pads). From the steps: switch SYNTH / DRUMS. Hold SEQ + white key 1-4: bank A-D (while playing, at the next bar) |
-| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD / INDEX / UNISON · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / MIX / STEP MOD · GLOBAL / TRANSPOSE. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
+| EDIT · SEL · ENV · FX · GLO | The sound, as pictures. Synth: OSC / TONE · MOD / INDEX / UNISON · ENV. Drums: SOUND / SWEEP · PERF · ENV. Both: DELAY / SPACE / BUS / MIX / PUMP / STEP MOD · GLOBAL / TRANSPOSE. Press a button again for its next page. The white keys still edit steps here: their lights show the pattern |
 | LFO | The LFO: one wave (sine, triangle, square, sample and hold; 0.05-20 Hz, or synced from 4 bars to 1/32) to the synth's FILTER, INDEX, PITCH, LEVEL or PAN, the DELAY time, or the drums' pitch or level. STEP MOD (FX, fourth page) does the same from a drum track: each hit pushes the destination down and lets it recover, e.g. the kick ducking the synth |
 | SELECT | Pick the lane or the track (lanes sound their note). With steps held: trig condition |
 | ALGORITHM / PRESETS | The morph, on every page: X and Y of a puck that blends the four sounds in corners A-D. Turn a sound knob with the puck on a corner and that corner changes; turn it anywhere else and all four shift together, so no edit is lost |
-| HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SONG. Again: SYSTEM (CPU, voices, load history) |
+| HOME | The orbit: every lane as a ring, the drums as the outer halo, and when the lanes next line up. Again: SONG. Again: PROJECTS. Again: SYSTEM (CPU, voices, load history) |
 | ARP | PERFORM |
 | Hold FX | Effects on the white keys while held: 1 freeze, 2 echo throw, 3 space throw, 4 filter low, 5 filter high, 6 thin, 7 busy, 8 repeat, 9 FILL (steps with the FILL condition play); 13-16 jump the puck to corners A-D. Black keys mute lanes (synth) or tracks (drums). KNOB1-4: the Perform macros |
 | Hold SEQ | 1-4 bank A-D (at the next bar while playing); 5 clear, 6 reverse, 7 / 8 shift, 9 new rhythm, 10 cook (a small change each press), 11 double, 12 half, 13 copy, 14 paste. KNOB1 length, KNOB2 hits (spread evenly: Euclidean), KNOB3 rotate, KNOB4 swing |
-| Hold GLO | 1 tap tempo, 2 restart from the top, 3 MIDI clock sync on/off, 4 KEYS (white keys play the synth in the scale, held as long as the key is; with REC while playing, a note lands on the lane of that degree), 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
+| Hold GLO | 1 tap tempo, 2 restart from the top, 3 MIDI clock sync on/off, 4 KEYS (white keys play the synth in the scale, held as long as the key is; OCT- and OCT+ together latch them, and
+the keys light for the notes the lanes play; with REC while playing, a note lands on the lane of that degree), 16 everything back on; black keys solo. SELECT and KNOB1 tempo, KNOB2 swing, KNOB3 scale, KNOB4 root |
 | Hold LFO | Turn any knob: the change springs back when LFO is let go |
 | Hold SAVE | Undo the last edit: a pattern edit or tool, or a sound or song edit (a knob gesture counts as one). Again: redo |
 | REC with steps held | Trigless, drawn hollow. Synth: the step moves the sounding note without a new one. Drums: the step changes the ringing hit (its pitch, ratio, index or filter) |
@@ -65,6 +70,26 @@ loop (moving the puck pauses it, REC resumes); hold REC 1 s to clear. The path i
 drums, the selected drum's volume; SELECT picks), KNOB4 the master. Levels read in dB (0.0 is where they start).
 Meters beside the faders show what plays; LIMIT lights when the output limiter is pulling the level down, a sign
 to lower the master or the louder side.
+
+**Pump.** FX five times. The synth ducks on each kick hit (or every beat) and comes back over TIME. DEPTH, TIME,
+SOURCE (KICK or BEAT), TARGET (SYNTH, or SYNTH + FX to duck its sends too). The picture shows the duck across a bar.
+
+**Feedback.** A knob the LFO (pink) or step mod (amber) moves has a ring around its dot; the arc is how far. The
+header's right end is an output meter, pink near full scale. Turning a stepped setting (ratio, noise type, LFO
+destination, scale...) shows its new value large for a moment. Level, send, delay and reverb changes glide.
+
+**Safe start.** If the FM-1 crashed or hung last time, ORBIT DRIFT starts with defaults and leaves your save alone
+(no autosave). Press SAVE to load your work; if it was what crashed, power off and on to start clean again.
+
+**Projects.** HOME three times. White keys 1-8 (or KNOB1) pick a slot, KNOB2 picks LOAD, SAVE or CLEAR, OCT+ does it;
+anything that replaces something asks for OCT+ again, OCT- cancels. A project is everything: sounds, banks, song,
+snapshots, the morph path and its macros. Saving only while stopped (writing the flash pauses the sound).
+
+**Macro motion.** Recording a morph path on Perform (REC) also records the four macros; playback moves them.
+Turning a macro pauses the path, REC plays it again. Saved with the work and in projects.
+
+**SYSTEM** shows where the CPU time goes (SYN, DRM, FX) and how many cores run. The second core is ported
+(from felucca-bsp) but not in this build yet.
 
 **Song.** HOME twice. White keys 1-4 add a block of bank A-D; KNOB1 picks a block, KNOB2 its bank, KNOB3 its
 repeats in bars, KNOB4 turns the song on. Black keys F#3-D#4 mute KICK-CLAP in the block and F#4 the synth (the
