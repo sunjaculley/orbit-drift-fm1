@@ -318,7 +318,11 @@ function loadStore() {
 }
 function saveStore(bytes) {
   try {
-    localStorage.setItem(storeKey, btoa(String.fromCharCode(...bytes)))
+    {
+      let b = ''
+      for (let i = 0; i < bytes.length; i += 0x8000) b += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+      localStorage.setItem(storeKey, btoa(b))
+    }
   } catch {}
 }
 

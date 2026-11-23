@@ -165,31 +165,82 @@ void midi_send(uint8_t status, uint8_t d1, uint8_t d2) {
   }
 }
 
-/* ---- settings: the page keeps them (localStorage) and gives them back before boot */
-static uint8_t store[SETTINGS_MAX];
-static int32_t store_len = -1;
+/* ---- settings and the store (BARLINE): one blob the page keeps (localStorage) and gives back before boot:
+ * [settings length (4)][settings SETTINGS_MAX][per slot: length (4), STORE_SLOT_MAX bytes] */
+#define SLOT_AT(k) (4u + SETTINGS_MAX + (k) * (4u + STORE_SLOT_MAX))
+#define BLOB (SLOT_AT(STORE_SLOTS))
+static uint8_t store[BLOB];
+static int32_t store_n = -1;
 static uint32_t store_gen;
+static int32_t rd32(uint32_t at) { int32_t v; memcpy(&v, store + at, 4); return v; }
+static void wr32(uint32_t at, int32_t v) { memcpy(store + at, &v, 4); }
+static void blob_init(void) {
+  if (store_n != (int32_t)BLOB) { /* nothing kept (or an older page's settings only): all empty */
+    int32_t old = store_n;
+    if (old > 0 && old <= (int32_t)SETTINGS_MAX) { /* a plain settings blob from before: keep it */
+      for (int32_t i = old - 1; i >= 0; i--) store[4 + i] = store[i];
+    } else {
+      old = -1;
+    }
+    wr32(0, old);
+    for (uint32_t k = 0; k < STORE_SLOTS; k++) wr32(SLOT_AT(k), -1);
+    store_n = (int32_t)BLOB;
+  }
+}
 EXPORT(web_store)
 uint8_t *web_store(void) { return store; }
 EXPORT(web_store_len)
-int32_t web_store_len(void) { return store_len; }
+int32_t web_store_len(void) { blob_init(); return store_n; }
 EXPORT(web_store_set_len)
-void web_store_set_len(int32_t n) { store_len = n > (int32_t)SETTINGS_MAX ? (int32_t)SETTINGS_MAX : n; }
+void web_store_set_len(int32_t n) { store_n = n > (int32_t)BLOB ? (int32_t)BLOB : n; blob_init(); }
 EXPORT(web_store_gen)
 uint32_t web_store_gen(void) { return store_gen; }
 int settings_load(void *p, uint32_t n) {
-  if (store_len < 0 || (uint32_t)store_len != n) {
+  blob_init();
+  if (rd32(0) != (int32_t)n) {
     return -1;
   }
-  memcpy(p, store, n);
+  memcpy(p, store + 4, n);
   return 0;
 }
 int settings_save(const void *p, uint32_t n) {
-  if (n > sizeof store) {
+  blob_init();
+  if (n > SETTINGS_MAX) {
     return -1;
   }
-  memcpy(store, p, n);
-  store_len = (int32_t)n;
+  memcpy(store + 4, p, n);
+  wr32(0, (int32_t)n);
+  store_gen++;
+  return 0;
+}
+int platform_last_crashed(void) { return 0; }
+int store_len(uint32_t slot) {
+  blob_init();
+  return slot < STORE_SLOTS ? rd32(SLOT_AT(slot)) : -1;
+}
+int store_load(uint32_t slot, void *p, uint32_t n) {
+  if (store_len(slot) != (int)n) {
+    return -1;
+  }
+  memcpy(p, store + SLOT_AT(slot) + 4, n);
+  return 0;
+}
+int store_save(uint32_t slot, const void *p, uint32_t n) {
+  blob_init();
+  if (slot >= STORE_SLOTS || n > STORE_SLOT_MAX) {
+    return -1;
+  }
+  memcpy(store + SLOT_AT(slot) + 4, p, n);
+  wr32(SLOT_AT(slot), (int32_t)n);
+  store_gen++;
+  return 0;
+}
+int store_erase(uint32_t slot) {
+  blob_init();
+  if (slot >= STORE_SLOTS) {
+    return -1;
+  }
+  wr32(SLOT_AT(slot), -1);
   store_gen++;
   return 0;
 }

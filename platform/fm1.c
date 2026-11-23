@@ -63,7 +63,10 @@ static volatile uint8_t in_audio;   /* the audio interrupt is running */
  * (Felucca's globals, 0xFC000..0xFF000: below them are the update records, above the MAC key) */
 #define SETTINGS_AT 0x000FC000u
 #define SETTINGS_END 0x000FF000u
-#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_END))
+#define STORE_AT 0x00097000u /* Felucca's data region (store patch from BARLINE), as STORE_SLOTS slots of 24 KiB */
+#define STORE_SLOT_BYTES 0x6000u
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_END) || \
+                             FL_IN(off, n, STORE_AT, STORE_AT + STORE_SLOTS * STORE_SLOT_BYTES))
 #if FOMA_BLUETOOTH
 #define FL_UID /* the flash's unique ID: the Bluetooth address */
 #endif
@@ -251,6 +254,80 @@ int settings_save(const void *p, uint32_t n) { /* p is in RAM (the flash driver 
     return rc;
   }
   return fl_write(SETTINGS_AT, (const uint8_t *)h, sizeof h); /* the header last: a cut save stays invalid */
+}
+
+/* ---- the last run: 1 if it ended in a crash or the watchdog (not a power-on or an update), so the app can start safe */
+static uint32_t crash_seen __attribute__((section(".noinit")));
+int platform_last_crashed(void) {
+  static int once = -1;
+  uint32_t p3 = fm1_boot.p3_rst, n = fm1_crash.magic == FM1_CRASH_MAGIC ? fm1_crash.count : 0;
+  if (once >= 0) {
+    return once;
+  }
+  once = (p3 & 4u) || (n && n != crash_seen);
+  if ((p3 & 1u) && !(p3 & 4u)) {
+    once = 0; /* a power-on: whatever .noinit holds is noise */
+  }
+  crash_seen = n;
+  return once;
+}
+
+/* ---- store: slots in Felucca's data region (BARLINE). The same header as the settings: magic, length, CRC */
+#define STORE_MAGIC 0x4442524Fu /* "ORBD" */
+_Static_assert(STORE_AT + STORE_SLOTS * STORE_SLOT_BYTES <= 0x000E0000u, "the store must stay below the update staging");
+_Static_assert(STORE_SLOT_MAX + 12u <= STORE_SLOT_BYTES, "a slot must fit its sectors");
+static int store_head(uint32_t slot, uint32_t h[3]) {
+  if (!flash_ok || slot >= STORE_SLOTS || st_read(STORE_AT + slot * STORE_SLOT_BYTES, h, 12) || h[0] != STORE_MAGIC ||
+      h[1] > STORE_SLOT_MAX) {
+    return -1;
+  }
+  return 0;
+}
+int store_len(uint32_t slot) {
+  uint8_t buf[256];
+  uint32_t h[3], c = 0xFFFFFFFFu, at0;
+  if (store_head(slot, h)) {
+    return -1;
+  }
+  at0 = STORE_AT + slot * STORE_SLOT_BYTES + 12u;
+  for (uint32_t at = 0; at < h[1]; at += sizeof buf) {
+    uint32_t k = h[1] - at < sizeof buf ? h[1] - at : sizeof buf;
+    if (st_read(at0 + at, buf, k)) {
+      return -1;
+    }
+    c = crc32(c, buf, k);
+  }
+  return ~c == h[2] ? (int)h[1] : -1;
+}
+int store_load(uint32_t slot, void *p, uint32_t n) {
+  if (store_len(slot) != (int)n) {
+    return -1;
+  }
+  return st_read(STORE_AT + slot * STORE_SLOT_BYTES + 12u, p, n) ? -1 : 0;
+}
+int store_save(uint32_t slot, const void *p, uint32_t n) { /* p is in RAM */
+  uint32_t h[3] = {STORE_MAGIC, n, 0}, took, base = STORE_AT + slot * STORE_SLOT_BYTES;
+  int rc;
+  if (!flash_ok || slot >= STORE_SLOTS || n > STORE_SLOT_MAX) {
+    return -1;
+  }
+  h[2] = ~crc32(0xFFFFFFFFu, p, n);
+  for (uint32_t at = base; at < base + 12u + n; at += 0x1000u) {
+    if ((rc = fl_erase4k(at, &took)) != 0) {
+      return rc;
+    }
+  }
+  if ((rc = fl_write(base + 12u, p, n)) != 0) {
+    return rc;
+  }
+  return fl_write(base, (const uint8_t *)h, sizeof h);
+}
+int store_erase(uint32_t slot) {
+  uint32_t took;
+  if (!flash_ok || slot >= STORE_SLOTS) {
+    return -1;
+  }
+  return fl_erase4k(STORE_AT + slot * STORE_SLOT_BYTES, &took);
 }
 
 /* ---- MIDI in from USB (cable 0) and the TRS jack (cable 1); out over USB, from loop() or audio() */

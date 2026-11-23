@@ -178,7 +178,8 @@ typedef struct {
 
 #define MAGIC_07 0x4F440005u /* 0.7: the same layout up to song_mute */
 #define MAGIC_08 0x4F440006u /* 0.8: the same layout up to mix */
-#define MAGIC 0x4F440007u
+#define MAGIC_09 0x4F440007u /* 0.9: the same layout up to pump */
+#define MAGIC 0x4F440008u
 typedef struct {
   uint32_t magic;
   int16_t k[NK];
@@ -197,14 +198,20 @@ typedef struct {
   /* 0.9 */
   uint8_t mix[4];  /* levels 0-127 (100 = 0 dB): synth, drums, master */
   uint8_t llev[8]; /* each synth lane */
+  /* 0.10 */
+  uint8_t pump[4]; /* depth 0-100, time 0-100, source 0 kick / 1 beat, target 0 synth / 1 synth + its sends */
 } store_t;
 static store_t S;
+static volatile uint8_t pump_hit; /* a kick (or the beat) since the pump last looked */
 #define OLD07_SIZE 11860u
 #define OLD08_SIZE 12136u
 _Static_assert(__builtin_offsetof(store_t, mix) == OLD08_SIZE, "0.8 layout must stay a prefix");
+#define OLD09_SIZE 12148u
+_Static_assert(__builtin_offsetof(store_t, pump) == OLD09_SIZE, "0.9 layout must stay a prefix");
 static void mix_defaults(void) {
   S.mix[0] = S.mix[1] = S.mix[2] = 100, S.mix[3] = 0;
   for (int l = 0; l < 8; l++) S.llev[l] = 100;
+  S.pump[0] = 0, S.pump[1] = 30, S.pump[2] = 0, S.pump[3] = 0;
 }
 _Static_assert(__builtin_offsetof(store_t, song_mute) == OLD07_SIZE, "0.7 layout must stay a prefix");
 #define HEAD_SIZE __builtin_offsetof(store_t, bank) /* settings, sounds, song: what sound undo covers */
@@ -501,11 +508,12 @@ static inline int32_t shaper(const svoice_t *v, int32_t x) {
   return x < 0 ? -t : t;
 }
 
+static int32_t synth_g12 = 4096;
 static void render_synth(int32_t *out, int32_t *sbus, uint32_t n) {
   for (int vi = 0; vi < MAXSV; vi++) {
     svoice_t *v = &SV[vi];
     if (!v->active) continue;
-    int32_t lg = (int32_t)S.mix[0] * (v->lane < 8 ? S.llev[v->lane] : 100) * 4096 / 10000; /* the mix: synth x lane, Q12 */
+    int32_t lg = synth_g12 * (v->lane < 8 ? S.llev[v->lane] : 100) / 100; /* the mix: synth x lane, Q12 */
     if (v->lframes) { /* the index envelope loops in time */
       v->lcount -= (int32_t)n;
       if (v->lcount <= 0) {
@@ -641,6 +649,7 @@ static void fire_drum(int t, const uint8_t *p, int32_t vel) {
   v->active = 0;
   v->noise = (uint8_t)IS_NOISE(t);
   v->trk = (uint8_t)t;
+  if (t == 0 && vel > 8000) pump_hit = 1; /* the kick drives the pump */
   v->peak = peak << 9;
   int32_t atk = frames(p[P_ATK]);
   if (atk < 1) atk = 1;
@@ -864,6 +873,7 @@ static void note_req(int type, int who, int id, int deg, int note, int vel) {
 
 static uint32_t tick, pulse;
 static void do_pulse(void) {
+  if (pulse % 4 == 0 && S.pump[2]) pump_hit = 1; /* the pump on the beat */
   if (pulse % 16 == 0) { /* the bar line: song, queued bank, transpose */
     static uint8_t sidx, srep;
     if (S.k[K_SONG] && S.song_n) {
@@ -988,7 +998,14 @@ static volatile uint8_t ready; /* setup() has run: until then audio() plays sile
 static int32_t rv_i1, rv_i2, rv_w[4], rv_lp[4], rv_hold, rv_held;
 
 static int32_t lim_env = 26000;
-static volatile uint16_t pk_syn, pk_drm, pk_out; /* meters: the loudest sample since the panel last looked */
+static volatile uint16_t pk_syn, pk_drm, pk_out, pk_hdr; /* meters: the loudest sample since the panel last looked */
+static volatile uint16_t sec_pct[3]; /* share of the audio time: synth voices, drums, effects and mix */
+static volatile uint16_t pump_show; /* the pump's duck now, 0-32768, for the picture */
+static int32_t glide(int32_t *s, int32_t t) { /* a setting's smoothed value, once a block: no steps on fast turns */
+  int32_t d = t - *s;
+  *s += d > 3 || d < -3 ? d / 4 : d;
+  return *s;
+}
 static volatile uint8_t limiting;
 
 static int32_t dly_read(const int16_t *buf, int32_t t_q8) {
@@ -1047,7 +1064,9 @@ void audio(int32_t *out, uint32_t nframes) {
   int32_t gdd = clampi(k[K_SDD] + th, 0, 100) * 328, gds = clampi(k[K_SDS] + th, 0, 100) * 328;
   if (fx_td) gsd = gdd = 32767; /* throws: everything into the delay, or the space, while held */
   if (fx_ts) gss = gds = 32767;
-  int32_t dfb = k[K_DFB] * 328;
+  static int32_t g_sd, g_ss, g_dd, g_ds, g_fb, g_rm, g_rf, g_dp, g_dg, g_mg, g_sg;
+  gsd = glide(&g_sd, gsd), gss = glide(&g_ss, gss), gdd = glide(&g_dd, gdd), gds = glide(&g_ds, gds);
+  int32_t dfb = glide(&g_fb, k[K_DFB] * 328);
   int field = k[K_DMODE];
   /* the echo field (ORBITAL's): four taps of one send, the shortest fed back through a damping low-pass.
    * TIME A sets its size, TIME B its gravity (feedback), FEEDBK its trail (send and brightness) */
@@ -1061,9 +1080,13 @@ void audio(int32_t *out, uint32_t nframes) {
   /* space */
   int32_t eff[4];
   for (int i = 0; i < 4; i++) eff[i] = RV_LEN[i] * (40 + k[K_SPACE] * 6 / 10) / 100;
-  int32_t rfb = 18000 + k[K_TRAIL] * 128;
-  int32_t damp = 24000 - k[K_TRAIL] * 100 - k[K_DIRT] * 60;
-  int32_t rmix = k[K_MIX] * 655;
+  int32_t rfb = glide(&g_rf, 18000 + k[K_TRAIL] * 128);
+  int32_t damp = glide(&g_dp, 24000 - k[K_TRAIL] * 100 - k[K_DIRT] * 60);
+  int32_t rmix = glide(&g_rm, k[K_MIX] * 655);
+  synth_g12 = glide(&g_sg, S.mix[0] * 4096 / 100);
+  /* the pump: a duck on each kick (or beat), back over TIME */
+  static int32_t penv;
+  int32_t pcoef = coef_slice(frames(30 + S.pump[1] * 57 / 10)), pdep = S.pump[0] * 328, pg = 32768;
   int dirt = k[K_DIRT], dhold = 1 + dirt / 15;
   int32_t dmask = dirt ? ~((1 << (dirt / 11)) - 1) : ~0;
   uint32_t lfo_inc;
@@ -1078,6 +1101,7 @@ void audio(int32_t *out, uint32_t nframes) {
   int ld = ldep ? k[K_LDEST] : 0, md = mdep ? k[K_MDEST] : 0;
   int32_t gl_s = 32768, gr_s = 32768, dmod = 0;
   int32_t dg12 = S.mix[1] * 4096 / 100, mg12 = S.mix[2] * 4096 / 100, bs = 0, bd = 0, bo = 0;
+  uint32_t t_syn = 0, t_drm = 0;
 
   for (uint32_t at = 0; at < nframes; at += SUB) {
     uint32_t n = nframes - at < SUB ? nframes - at : SUB;
@@ -1123,9 +1147,20 @@ void audio(int32_t *out, uint32_t nframes) {
       int32_t dp = (ld == 7 ? lv : 0) - (md == 7 ? sv : 0);   /* drum pitch, +-7 semitones */
       m_dpm = (int32_t)exp2_q16(dp * 14 / 12 * 7 / 7 + (15 << 16));
       m_dlev = clampi(32768 - (ld == 8 ? (ldep - lv) >> 1 : 0) - (md == 8 ? sv : 0), 0, 32768);
+      if (pump_hit) pump_hit = 0, penv = 32768;
+      else penv = (int32_t)(((int64_t)penv * pcoef) >> 28);
+      pg = 32768 - ((pdep * (penv >> 1)) >> 14);
+      gl_s = (int32_t)(((int64_t)gl_s * pg) >> 15), gr_s = (int32_t)(((int64_t)gr_s * pg) >> 15);
+      pump_show = (uint16_t)(32768 - pg);
     }
+    uint32_t t1 = micros();
     render_synth(o, sbus, n);
+    if (S.pump[3] && pg < 32768)
+      for (uint32_t f = 0; f < n; f++) sbus[f] = (int32_t)(((int64_t)sbus[f] * pg) >> 15); /* the sends duck too */
+    uint32_t t2 = micros();
+    t_syn += t2 - t1;
     render_drums(dbus, n);
+    t_drm += micros() - t2;
     int32_t want_a = frames(k[K_DTA]) * 256 + dmod, want_b = frames(k[K_DTB]) * 256 + dmod;
     if (want_a < 25600) want_a = 25600;
     if (want_b < 25600) want_b = 25600;
@@ -1210,9 +1245,16 @@ void audio(int32_t *out, uint32_t nframes) {
   if (bs > pk_syn) pk_syn = (uint16_t)(bs > 65535 ? 65535 : bs);
   if (bd > pk_drm) pk_drm = (uint16_t)(bd > 65535 ? 65535 : bd);
   if (bo > pk_out) pk_out = (uint16_t)(bo > 65535 ? 65535 : bo);
+  if (bo > pk_hdr) pk_hdr = (uint16_t)(bo > 65535 ? 65535 : bo);
   if (lim_env > 26600) limiting = 1;
   uint32_t used = micros() - t0, budget = nframes * 22676u / 1000u;
   load_pct = (uint16_t)((load_pct * 7u + (budget ? used * 100u / budget : 0)) / 8u);
+  if (budget) {
+    uint32_t fx = used > t_syn + t_drm ? used - t_syn - t_drm : 0;
+    sec_pct[0] = (uint16_t)((sec_pct[0] * 7u + t_syn * 100u / budget) / 8u);
+    sec_pct[1] = (uint16_t)((sec_pct[1] * 7u + t_drm * 100u / budget) / 8u);
+    sec_pct[2] = (uint16_t)((sec_pct[2] * 7u + fx * 100u / budget) / 8u);
+  }
 }
 
 /* ================================================================ the panel */
@@ -1288,15 +1330,15 @@ static const uint16_t KC[4] = {RGB(77, 225, 240), RGB(200, 242, 90), RGB(242, 24
 
 enum { V_HOME, V_SYS, V_SYNTH, V_DRUM, V_PAGE, V_PERF, V_SONG };
 enum { PG_OSC, PG_TONE, PG_MOD, PG_ENV, PG_DSND, PG_DSWP, PG_DPRF, PG_DENV, PG_DLY, PG_SPC, PG_BUS, PG_GLO, PG_GLO2,
-       PG_PERF, PG_LFO, PG_SMOD, PG_MOD2, PG_UNI, PG_MIX, NPG };
+       PG_PERF, PG_LFO, PG_SMOD, PG_MOD2, PG_UNI, PG_MIX, PG_PUMP, NPG };
 static const char *const PAGE_NAME[NPG] = {"OSC", "TONE", "MOD", "ENV", "SOUND", "SWEEP", "PERF", "ENV",
-                                           "DELAY", "SPACE", "BUS", "GLOBAL", "TRANSPOSE", "PERFORM", "LFO", "STEP MOD", "INDEX", "UNISON", "MIX"};
-#define NPGI 14 /* EDIT 0-1, SEL 2-4, ENV 5, LFO 6, FX 7-11, GLO 12-13 */
-static const uint8_t SLIST[NPGI] = {PG_OSC, PG_TONE, PG_MOD, PG_MOD2, PG_UNI, PG_ENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_SMOD, PG_GLO, PG_GLO2};
-static const uint8_t DLIST[NPGI] = {PG_DSND, PG_DSWP, PG_DPRF, PG_DPRF, PG_DPRF, PG_DENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_SMOD, PG_GLO, PG_GLO2};
+                                           "DELAY", "SPACE", "BUS", "GLOBAL", "TRANSPOSE", "PERFORM", "LFO", "STEP MOD", "INDEX", "UNISON", "MIX", "PUMP"};
+#define NPGI 15 /* EDIT 0-1, SEL 2-4, ENV 5, LFO 6, FX 7-12, GLO 13-14 */
+static const uint8_t SLIST[NPGI] = {PG_OSC, PG_TONE, PG_MOD, PG_MOD2, PG_UNI, PG_ENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_PUMP, PG_SMOD, PG_GLO, PG_GLO2};
+static const uint8_t DLIST[NPGI] = {PG_DSND, PG_DSWP, PG_DPRF, PG_DPRF, PG_DPRF, PG_DENV, PG_LFO, PG_DLY, PG_SPC, PG_BUS, PG_MIX, PG_PUMP, PG_SMOD, PG_GLO, PG_GLO2};
 #define FX0 7
-#define FX1 11
-#define GLO0 12
+#define FX1 12
+#define GLO0 13
 static const char *const DEST_NAME[9] = {"OFF", "FILTER", "INDEX", "PITCH", "LEVEL", "PAN", "DELAY", "DRM PIT", "DRM LVL"};
 static const char *const DEST3[9] = {"OFF", "FLT", "IDX", "PIT", "LVL", "PAN", "DLY", "DPT", "DLV"};
 #define X_VOL 200
@@ -1306,6 +1348,10 @@ static const char *const DEST3[9] = {"OFF", "FLT", "IDX", "PIT", "LVL", "PAN", "
 #define X_DLEV 204
 #define X_CH 205 /* the selected lane's level, or the selected drum's volume */
 #define X_MAST 206
+#define X_PDEP 207 /* the pump: depth, time, source, target */
+#define X_PTIME 208
+#define X_PSRC 209
+#define X_PTGT 210
 #define D(p) (100 + (p))
 static const uint8_t PAGE_SLOT[NPG][4] = {
   {K_ALGO, K_RATIO, K_INDEX, K_FB},       {K_CUT, K_CONTOUR, K_RESO, K_DRIVE},  {K_MATK, K_MDEC, K_MEND, K_MVEL},
@@ -1316,6 +1362,7 @@ static const uint8_t PAGE_SLOT[NPG][4] = {
   {K_INT, K_KIT, K_THROW, K_FILT},        {K_LDEST, K_LRATE, K_LDEPTH, K_LSHAPE},
   {K_MSRC, K_MDEST, K_MSHAPE, K_MDEPTH},  {K_KTRK, K_MLOOP, K_OP3, K_DRIFT},     {K_UNI, K_UDET, K_USPR, K_UMIX},
   {X_SLEV, X_DLEV, X_CH, X_MAST},
+  {X_PDEP, X_PTIME, X_PSRC, X_PTGT},
 };
 static const int16_t DB10[128] = {-999, -400, -340, -305, -280, -260, -244, -231, -219, -209, -200, -192, -184, -177, -171, -165, -159, -154, -149, -144, -140, -136, -132, -128, -124, -120, -117, -114, -111, -108, -105, -102, -99, -96, -94, -91, -89, -86, -84, -82, -80, -77, -75, -73, -71, -69, -67, -66, -64, -62, -60, -58, -57, -55, -54, -52, -50, -49, -47, -46, -44, -43, -42, -40, -39, -37, -36, -35, -33, -32, -31, -30, -29, -27, -26, -25, -24, -23, -22, -20, -19, -18, -17, -16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -4, -3, -2, -1, 0, 1, 2, 3, 3, 4, 5, 6, 7, 7, 8, 9, 10, 11, 11, 12, 13, 14, 14, 15, 16, 17, 17, 18, 19, 19, 20, 21}; /* level 0-127 in tenths of a dB, 100 = 0 dB */
 static const uint8_t NOISE_SND[4] = {D(P_IDX), D(P_CAR), D(P_RAT), 255};
@@ -1326,7 +1373,7 @@ enum { BK_RND = 8, BK_CLR = 9, BK_F5 = 10, BK_COPY = 5, BK_PASTE = 6, BK_CLRLOCK
 
 static uint8_t view = V_HOME, drawn_view = 255, mode, lane, track, spage, rec, playing, pgi, lockset, keys_on, song_cur;
 static uint32_t held;
-static uint8_t held_used, seq_used, save_used;
+static uint8_t held_used, seq_used, save_used, safe_mode;
 static uint32_t rnd_since, f5_since, puck_say;
 static char msg[30];
 static uint32_t msg_until;
@@ -1458,6 +1505,7 @@ static void fmt_d(int kind, int t, char *val, const char **unit) {
 }
 
 /* ---- the header: mode, page name, a dot per page under that button, bank, CPU, tempo */
+static int hm_drawn;
 static void draw_head(void) {
   char b[24], *d;
   rect(0, 0, SCREEN_W, 18, C_BG);
@@ -1486,8 +1534,27 @@ static void draw_head(void) {
   d = put(d, "% ");
   if (S.k[K_SYNC]) put(d, "EXT");
   else put_int(d, S.k[K_BPM]);
-  text(SCREEN_W - 4 - text_width(b, FONT_SMALL), 1, b, load_pct > 80 ? C_PINK : playing ? C_LIME : C_DIM, FONT_SMALL);
+  text(SCREEN_W - 9 - text_width(b, FONT_SMALL), 1, b, load_pct > 80 ? C_PINK : playing ? C_LIME : C_DIM, FONT_SMALL);
   rect(0, 18, SCREEN_W, 1, C_LINE);
+  hm_drawn = -1;
+}
+/* the output meter at the header's right end, on every page: pink while the limiter works */
+static int hm_drawn = -1;
+static uint16_t hm_v;
+static uint8_t hm_lim;
+static void draw_hmeter(void) {
+  uint16_t p = pk_hdr;
+  pk_hdr = 0;
+  hm_v = p > hm_v ? p : hm_v - (hm_v >> 3);
+  int h = 0;
+  uint32_t q = hm_v;
+  while (q > 64 && h < 16) q >>= 1, h += 2;
+  h = h * 14 / 16;
+  uint8_t lim = hm_v > 25000;
+  if (h == hm_drawn && lim == hm_lim) return;
+  hm_drawn = h, hm_lim = lim;
+  rect(234, 2, 3, 14, C_PANEL);
+  if (h) rect(234, 16 - h, 3, h, lim ? C_PINK : C_LIME);
 }
 
 /* ================================================================ morph: the puck's X and Y blend the sounds of
@@ -1812,6 +1879,16 @@ static int get_cell(int i, const char **label, char *val, const char **unit, int
   }
   int id = cell_slot(i);
   if (id == 255) return 0;
+  if (id >= X_PDEP && id <= X_PTGT) {
+    static const char *const PL[4] = {"DEPTH", "TIME", "SOURCE", "TARGET"};
+    int v = S.pump[id - X_PDEP];
+    *label = PL[id - X_PDEP];
+    if (id == X_PDEP) put_int(val, v), *unit = "%", *norm = v;
+    if (id == X_PTIME) put_int(val, 30 + v * 57 / 10), *unit = "MS", *norm = v;
+    if (id == X_PSRC) put(val, v ? "BEAT" : "KICK"), *norm = v * 100;
+    if (id == X_PTGT) put(val, v ? "SYN+FX" : "SYNTH"), *norm = v * 100;
+    return 1;
+  }
   if (id >= X_SLEV && id <= X_MAST) {
     static const char *const ML[4] = {"SYNTH", "DRUMS", "LANE", "MASTER"};
     int v = id == X_SLEV ? S.mix[0] : id == X_DLEV ? S.mix[1] : id == X_MAST ? S.mix[2] : mode ? S.vol[track] : S.llev[lane];
@@ -1869,11 +1946,15 @@ static int get_cell(int i, const char **label, char *val, const char **unit, int
   return r;
 }
 
-static int mod_mark(int id) { /* 1: the LFO moves this setting, 2: the step mod does */
-  static const int8_t A[9] = {-1, K_CUT, K_INDEX, -1, -1, -1, K_DTA, -1, -1};
+static int mod_hits(int dest, int id) { /* does destination dest move setting id (a K id, or a slot id) */
+  static const int16_t A[9] = {-1, K_CUT, K_INDEX, -1, X_SLEV, -1, K_DTA, 100 + P_PITCH, X_DLEV};
+  return dest > 0 && dest < 9 && (A[dest] == id || (dest == 6 && id == K_DTB) || (dest == 1 && id == K_FILT) ||
+                                  (dest == 8 && id == X_CH && mode) || (dest == 7 && id == 100 + P_CAR && mode));
+}
+static int mod_mark(int id, int *depth) { /* 1: the LFO moves this setting, 2: the step mod does; depth 0-100 */
   if (id < 0) return 0;
-  if (S.k[K_LDEPTH] && (A[S.k[K_LDEST]] == id || (S.k[K_LDEST] == 6 && id == K_DTB))) return 1;
-  if (S.k[K_MDEPTH] && (A[S.k[K_MDEST]] == id || (S.k[K_MDEST] == 6 && id == K_DTB))) return 2;
+  if (S.k[K_LDEPTH] && mod_hits(S.k[K_LDEST], id)) return *depth = S.k[K_LDEPTH], 1;
+  if (S.k[K_MDEPTH] && mod_hits(S.k[K_MDEST], id)) return *depth = S.k[K_MDEPTH], 2;
   return 0;
 }
 static void draw_strip(void) { /* per knob: its colour, the name, the value. A ring marks what is being modulated */
@@ -1892,8 +1973,11 @@ static void draw_strip(void) { /* per knob: its colour, the name, the value. A r
       }
     for (; j < n2 && j < 6; j++) b[j] = t[j];
     b[j] = 0;
-    int mk = mod_mark(cell_id);
-    if (mk) disk(i * 60 + 5, 212, 5, mk == 1 ? C_PINK : C_AMBER), disk(i * 60 + 5, 212, 4, C_BG);
+    int dep = 0, mk = mod_mark(cell_id >= 0 ? cell_id : cell_slot(i), &dep);
+    if (mk) { /* a range ring: how far the LFO (pink) or step mod (amber) moves it */
+      ring_dots(i * 60 + 5, 212, 5, C_LINE2);
+      arc_at(i * 60 + 5, 212, 4, 6, 0, 40 + dep * 4056 / 100, mk == 1 ? C_PINK : C_AMBER);
+    }
     disk(i * 60 + 5, 212, mk ? 2 : 3, KC[i]);
     text(i * 60 + 11, 204, b, C_MUTE, FONT_SMALL);
     char *d = put(vv, v);
@@ -2067,10 +2151,20 @@ static void draw_sys(void) {
   put_int(b, load_pct);
   int x = text(12, 24, b, C_TEXT, FONT_BIG);
   text(x + 4, 38, "% CPU", C_MUTE, FONT_SMALL);
-  d = put(b, "SYNTH VOICES ");
-  d = put_int(d, vcap);
-  put(d, "/10");
-  text(12, 58, b, C_DIM, FONT_SMALL);
+  { /* where the time goes */
+    static const char *const SN[3] = {"SYN", "DRM", "FX"};
+    static const uint16_t SC[3] = {C_VIO, C_CORAL, C_MINT};
+    int xx = 12;
+    for (int i = 0; i < 3; i++) {
+      d = put(b, SN[i]);
+      *d++ = ' ';
+      put_int(d, sec_pct[i]);
+      xx = text(xx, 58, b, SC[i], FONT_SMALL) + 10;
+    }
+    d = put(b, "V");
+    put_int(d, vcap);
+    text(SCREEN_W - 12 - text_width(b, FONT_SMALL), 58, b, C_DIM, FONT_SMALL);
+  }
   int nd = 0, ns = 0;
   for (int i = 0; i < 16; i++) {
     int col = i % 8, row = i / 8, xx = 12 + col * 27, yy = 80 + row * 27;
@@ -2965,6 +3059,43 @@ static void pic_mix(void) {
   mix_meters();
 }
 
+/* ---- PUMP: the synth's level over a bar, ducked at each kick (or beat) and back over TIME; the bar moves with it */
+static int pump_drawn;
+static void pic_pump(void) {
+  const bank_t *b = CB();
+  int dep = S.pump[0], tms = 30 + S.pump[1] * 57 / 10, py = 0;
+  int32_t step_ms = 15000 / (S.k[K_BPM] ? S.k[K_BPM] : 120);
+  rect(8, 40, 224, 1, C_LINE2);
+  rect(8, 120, 224, 1, C_LINE);
+  for (int x = 0; x < 224; x++) {
+    int s = x * 16 / 224, since = 99;
+    for (int j = 0; j <= s; j++) { /* the last trigger at or before this step */
+      int hit = S.pump[2] ? (j % 4 == 0) : (j < b->dlen[0] && ((b->on[0] >> j) & 1));
+      if (hit) since = s - j;
+    }
+    int ms = since == 99 ? 9999 : since * step_ms + (x * 16 % 224) * step_ms / 224;
+    int duck = ms >= tms * 3 ? 0 : dep * (tms * 3 - ms) / (tms * 3);
+    int y = 40 + duck * 80 / 100;
+    if (x) line(7 + x, py, 8 + x, y, KC[0]);
+    py = y;
+  }
+  for (int j = 0; j < 16; j++) { /* the triggers */
+    int hit = S.pump[2] ? (j % 4 == 0) : (j < b->dlen[0] && ((b->on[0] >> j) & 1));
+    if (hit) disk(8 + j * 14, 132, 3, S.pump[2] ? KC[2] : C_CORAL);
+  }
+  text(8, 144, S.pump[2] ? "EVERY BEAT" : "KICK HITS", S.pump[2] ? KC[2] : C_CORAL, FONT_SMALL);
+  text(232 - text_width(S.pump[3] ? "SYNTH + FX" : "SYNTH", FONT_SMALL), 144, S.pump[3] ? "SYNTH + FX" : "SYNTH", KC[3], FONT_SMALL);
+  pump_drawn = -1;
+}
+static int pump_drawn = -1;
+static void pump_anim(void) { /* the duck now, as a bar at the left edge */
+  int h = pump_show * 78 / 32768;
+  if (h == pump_drawn) return;
+  pump_drawn = h;
+  rect(1, 41, 4, 80, C_BG);
+  if (h) rect(1, 41, 4, h, KC[1]);
+}
+
 /* ---- the steps of the lane or track, under every picture */
 static void draw_mini(void) {
   const bank_t *b = CB();
@@ -3018,6 +3149,7 @@ static void draw_pic(void) {
     case PG_MOD2: pic_mod2(); break;
     case PG_UNI: pic_uni(); break;
     case PG_MIX: pic_mix(); break;
+    case PG_PUMP: pic_pump(); break;
     case PG_DSND: pic_drum(); break;
     case PG_DSWP: pic_dswp(); break;
     case PG_DPRF: pic_dprf(); break;
@@ -3047,6 +3179,7 @@ static void page_anim(void) {
       break;
     case PG_LFO: lfo_mark(); break;
     case PG_MIX: mix_meters(); break;
+    case PG_PUMP: pump_anim(); break;
     case PG_DLY:
       if (S.k[K_DMODE]) break;
       idx = playing ? (int)(pulses % 6u) : -1;
@@ -3116,12 +3249,16 @@ static int accel(int e, int32_t det) {
 }
 static int sgn(int d) { return d > 0 ? 1 : -1; }
 
+static void big_show(int id);
 static void edit_k(int id, int d) {
   if (id == 255 || !d) return;
   int u = KD[id].unit == U_INT && id == K_BPM ? U_PCT : KD[id].unit, dd = (u == U_ALGO || u == U_SCALE || u == U_NOTE || u == U_SYNC || u == U_FRAC || u == U_DEST || u == U_SHAPE || u == U_TRACK || u == U_DMODE || u == U_LOOP ||
             u == U_TLEN || u == U_EVERY || u == U_STOP || u == U_ONOFF || u == U_INT) ? sgn(d) : d;
   int was = S.k[id];
   S.k[id] = (int16_t)clampi(S.k[id] + dd * KD[id].step, KD[id].min, KD[id].max);
+  if (S.k[id] != was && (u == U_FRAC || u == U_DEST || u == U_SHAPE || u == U_DMODE || u == U_LOOP || u == U_SCALE ||
+                         u == U_NOTE || u == U_ALGO || (u == U_LRATE && S.k[id] > 100)))
+    big_show(id);
   for (int i = 0; i < NMORPH; i++) {
     if (MORPH_K[i] != id) continue;
     if (on_corner()) {
@@ -3136,6 +3273,33 @@ static void edit_k(int id, int d) {
   if (id >= K_INT && view == V_PERF) dirty |= D_MAIN;
 }
 static void snapshot_head(int gesture);
+/* a stepped setting's new value, large over the picture for a moment */
+static uint32_t big_until;
+static char big_t[16];
+static uint16_t big_c;
+static void big_draw(void) {
+  int w = text_width(big_t, FONT_BIG) + 24;
+  if (w > 232) w = 232;
+  capsule(120 - w / 2, 64, w, 44, 10, C_PANEL2);
+  center(120 - w / 2, w, 70, big_t, big_c, FONT_BIG);
+}
+static void big_show(int id) {
+  if (view != V_PAGE) return;
+  for (int i = 0; i < 4; i++) {
+    if (cell_slot(i) != id) continue;
+    const char *l, *u;
+    char v[24], t[28];
+    int n;
+    if (!get_cell(i, &l, v, &u, &n)) return;
+    char *d = put(t, v);
+    put(d, u);
+    t[12] = 0;
+    put(big_t, t), big_c = KC[i];
+    big_draw();
+    big_until = millis() + 700;
+    return;
+  }
+}
 static void edit_slot(int id, int d) {
   bank_t *b = CB();
   if (id == 255) return;
@@ -3144,6 +3308,11 @@ static void edit_slot(int id, int d) {
     edit_k(id, d);
   } else if (id == X_VOL) {
     S.vol[track] = (uint8_t)clampi(S.vol[track] + d, 0, 100);
+  } else if (id >= X_PDEP && id <= X_PTGT) {
+    uint8_t *p = &S.pump[id - X_PDEP];
+    *p = (uint8_t)(id <= X_PTIME ? clampi(*p + d, 0, 100) : d > 0);
+    if (id >= X_PSRC) big_show(id);
+    dirty |= D_MAIN;
   } else if (id >= X_SLEV && id <= X_MAST) {
     if (id == X_CH && mode) S.vol[track] = (uint8_t)clampi(S.vol[track] + d, 0, 100);
     else {
@@ -3164,6 +3333,7 @@ static void edit_slot(int id, int d) {
     if (pd->kind == F_NONE) return;
     int dd = (pd->kind == F_FRAC || pd->kind == F_INT || pd->kind == F_NTYPE || pd->kind == F_PITCH || pd->kind == F_TICK) ? sgn(d) : d;
     S.def[track][p] = (uint8_t)clampi(S.def[track][p] + dd, pd->min, pd->max);
+    if (pd->kind == F_NTYPE || pd->kind == F_FRAC) big_show(100 + p);
     if (p == P_ACC) dirty |= D_MAIN;
   }
   dirty |= D_VALS | D_GRAPH;
@@ -3265,7 +3435,7 @@ static void randomize_track(int t) {
 }
 
 static bank_t undo_bank;
-static uint8_t undo_head[HEAD_SIZE], undo_smute[16], undo_mix[12];
+static uint8_t undo_head[HEAD_SIZE], undo_smute[16], undo_mix[16];
 static uint8_t undo_ok, undo_i, undo_redo, undo_kind; /* kind 0 a bank, 1 the sound and song */
 static void cpy(void *d, const void *src, uint32_t n) {
   uint8_t *a = (uint8_t *)d;
@@ -3287,7 +3457,7 @@ static void snapshot_head(int gesture) { /* before a sound or song edit: once pe
   last_g = gesture, last_at = now;
   cpy(undo_head, &S, HEAD_SIZE);
   cpy(undo_smute, S.song_mute, 16);
-  cpy(undo_mix, S.mix, 12);
+  cpy(undo_mix, S.mix, 16);
   undo_ok = 1, undo_redo = 0, undo_kind = 1;
 }
 static void swap_bytes(uint8_t *a, uint8_t *b, uint32_t n) {
@@ -3305,7 +3475,7 @@ static void undo(void) {
     uint8_t x = S.xy[0], y = S.xy[1];
     swap_bytes(undo_head, (uint8_t *)&S, HEAD_SIZE);
     swap_bytes(undo_smute, S.song_mute, 16);
-    swap_bytes(undo_mix, S.mix, 12);
+    swap_bytes(undo_mix, S.mix, 16);
     S.xy[0] = x, S.xy[1] = y;
     apply_morph();
     clock_tempo((uint32_t)S.k[K_BPM] * 100u);
@@ -3511,6 +3681,8 @@ static void black_down(int bk) {
   }
 }
 
+static uint16_t keys_down, keys_latched; /* KEYS: white keys held, notes latched */
+static uint8_t keys_latch;
 static void white_down(int w) {
   if (view == V_SONG) {
     song_key(w, -1);
@@ -3529,6 +3701,12 @@ static void white_down(int w) {
   }
   if (keys_on && !mode && (view == V_SYNTH || view == V_PAGE)) { /* KEYS: the white keys play the scale */
     const bank_t *b = CB();
+    if ((keys_latched >> w) & 1) { /* a latched note: this press lets it go */
+      keys_latched &= (uint16_t)~(1u << w);
+      note_req(1, 0, 1 + w, 0, -1, 0);
+      return;
+    }
+    keys_down |= (uint16_t)(1u << w);
     note_req(0, lane, 1 + w, w - b->lane[lane].deg + 7 * (2 - b->lane[lane].oct), -1, 127);
     if (rec && playing) { /* recording: the note goes to the lane of that degree, at its playhead */
       for (int l = 0; l < LANES; l++)
@@ -3548,8 +3726,15 @@ static void white_down(int w) {
   if (view == V_DRUM && mode) draw_pad(s);
   dirty |= D_CTX | D_VALS;
 }
+static void keys_release_all(void) {
+  for (int w = 0; w < 16; w++)
+    if ((keys_latched >> w) & 1) note_req(1, 0, 1 + w, 0, -1, 0);
+  keys_latched = 0;
+}
 static void white_up(int w) {
-  note_req(1, 0, 1 + w, 0, -1, 0); /* a KEYS note ends when its key is let go */
+  keys_down &= (uint16_t)~(1u << w);
+  if (keys_latch && keys_on && !mode && (view == V_SYNTH || view == V_PAGE)) keys_latched |= (uint16_t)(1u << w);
+  else note_req(1, 0, 1 + w, 0, -1, 0); /* a KEYS note ends when its key is let go */
   if (view == V_PERF) {
     if (w == 14) freeze = 0, dirty |= D_MAIN;
     if (w == snap_held) snap_put(&snap_live), snap_held = -1, dirty |= D_MAIN | D_VALS;
@@ -3885,6 +4070,7 @@ static void layer_knob(int l, int k, int d) {
   dirty |= D_VALS;
 }
 
+static uint8_t oct_prev_spage;
 void setup(void) {
   static const uint8_t IS_BLACK[12] = {0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0}; /* from F */
   int w = 0, b = 0;
@@ -3898,8 +4084,16 @@ void setup(void) {
       int dy2 = 2 * r - 2 * j - 1, dx2 = isqrt(4 * r * r - dy2 * dy2);
       INS[r][j] = (uint8_t)(r - (dx2 + 1) / 2);
     }
-  if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) {
+  if (platform_last_crashed()) { /* a crash or the watchdog last time: start clean, keep the save as it is */
+    init_all();
+    safe_mode = 1;
+    say("SAFE START: SAVE LOADS WORK");
+  } else if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) {
     say("RESTORED");
+  } else if (settings_load(&S, OLD09_SIZE) == 0 && S.magic == MAGIC_09) { /* a 0.9 save: keep it, add the pump */
+    S.magic = MAGIC;
+    S.pump[0] = 0, S.pump[1] = 30, S.pump[2] = 0, S.pump[3] = 0;
+    say("RESTORED FROM 0.9");
   } else if (settings_load(&S, OLD08_SIZE) == 0 && S.magic == MAGIC_08) { /* a 0.8 save: keep it, add the mix */
     S.magic = MAGIC;
     mix_defaults();
@@ -3966,7 +4160,10 @@ static void draw_all(void) {
       else if (d & D_VALS) draw_dface_graph();
       break;
     case V_PAGE:
-      if (d & (D_MAIN | D_VALS)) draw_pic(), draw_mini();
+      if (d & (D_MAIN | D_VALS)) {
+        draw_pic(), draw_mini();
+        if (big_until) big_draw(); /* a stepped value's name stays on top for its moment */
+      }
       break;
     case V_PERF:
       if (d & D_MAIN) {
@@ -4119,6 +4316,14 @@ void loop(void) {
   }
   if (button_pressed(BTN_SAVE)) save_used = 0, save_down = now;
   if (button_held(BTN_SAVE) && !save_used && now - save_down > 600) save_used = 1, undo();
+  if (button_released(BTN_SAVE) && !save_used && safe_mode) { /* after a safe start: SAVE brings the saved work back */
+    safe_mode = 0;
+    if (settings_load(&S, sizeof S) == 0 && S.magic == MAGIC) say("YOUR WORK IS BACK"), apply_morph();
+    else say("NO SAVE TO LOAD");
+    clock_tempo((uint32_t)S.k[K_BPM] * 100u);
+    dirty = D_ALL;
+    save_used = 1;
+  }
   if (button_released(BTN_SAVE) && !save_used) {
     if (playing) say("STOP TO SAVE");
     else say(settings_save(&S, sizeof S) == 0 ? "SAVED" : "SAVE FAILED");
@@ -4216,8 +4421,16 @@ void loop(void) {
     lay_latch = (uint8_t)lh, lb_used[lh] = 1;
     say("LAYER KEPT: TAP TO CLOSE");
   } else if (lh) {
+  } else if (keys_on && !mode && (view == V_SYNTH || view == V_PAGE) &&
+             ((button_pressed(BTN_OCT_DOWN) && button_held(BTN_OCT_UP)) || (button_pressed(BTN_OCT_UP) && button_held(BTN_OCT_DOWN)))) {
+    keys_latch ^= 1; /* both octave buttons: KEYS latch */
+    if (!keys_latch) keys_release_all();
+    spage = oct_prev_spage;
+    say(keys_latch ? "LATCH: NOTES HOLD" : "LATCH OFF");
+    dirty |= D_HEAD | D_MAIN;
   } else if (button_pressed(BTN_OCT_DOWN) || button_pressed(BTN_OCT_UP)) {
     int up = button_pressed(BTN_OCT_UP);
+    oct_prev_spage = spage;
     if (mode) {
       select_track(track + (up ? 1 : -1));
     } else {
@@ -4395,7 +4608,7 @@ void loop(void) {
       const uint8_t *p = (const uint8_t *)&S;
       for (uint32_t i = 0; i < sizeof S; i++) h = (h ^ p[i]) * 16777619u;
       if (!saved_sum) saved_sum = h;
-      if (h != saved_sum && now - touched > 10000 && (!last_save || now - last_save > 60000)) {
+      if (h != saved_sum && !safe_mode && now - touched > 10000 && (!last_save || now - last_save > 60000)) {
         if (settings_save(&S, sizeof S) == 0) saved_sum = h, last_save = now;
       }
     }
@@ -4405,11 +4618,24 @@ void loop(void) {
     static uint32_t lfo_at;
     int ph = mode ? dph(track) : sph(lane);
     if (!lay_drawn && ph != mini_ph) mini_ph = (int8_t)ph, draw_mini();
-    if (!lay_drawn && now - lfo_at >= 40) lfo_at = now, page_anim();
+    if (!lay_drawn && now - lfo_at >= 40 && !big_until) lfo_at = now, page_anim();
   }
 
+  { /* the header meter, and the big name's time up */
+    static uint32_t hm_at;
+    if (!lay_drawn && now - hm_at >= 40) hm_at = now, draw_hmeter();
+    if (big_until && (int32_t)(now - big_until) > 0) big_until = 0, dirty |= D_MAIN;
+  }
   /* LEDs */
   const bank_t *b = CB();
+  uint16_t keys_lit = 0;
+  if (keys_on && !mode && playing)
+    for (int l = 0; l < LANES; l++) {
+      int sp = sph(l);
+      if (sp < 0 || !DUR(&b->st[l][sp]) || ((smute >> l) & 1)) continue;
+      int kw = b->lane[l].deg + t_shift + 7 * b->lane[l].oct - 14;
+      if (kw >= 0 && kw < 16) keys_lit |= (uint16_t)(1u << kw);
+    }
   for (int k = 0; k < KEY_COUNT; k++) {
     int on = 0, w = white_of[k], bk = black_of[k];
     if (lay_drawn) {
@@ -4423,6 +4649,8 @@ void loop(void) {
       else if (w == 13) on = !synth_mute;
       else if (w == 14) on = freeze;
       else if (bk >= 0 && bk < 4) on = bk == nearest_corner();
+    } else if (!mode && keys_on && (view == V_SYNTH || view == V_PAGE)) { /* KEYS: the notes the lanes play now, and held keys */
+      on = w >= 0 ? (int)(((keys_lit | keys_down | keys_latched) >> w) & 1) : bk == lane;
     } else if (!mode) {
       if (w >= 0) {
         int s = w + (spage ? 16 : 0);

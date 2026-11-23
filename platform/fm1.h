@@ -196,6 +196,19 @@ const int32_t *audio_in(void);
 int settings_load(void *p, uint32_t n); /* 0: loaded; else p is untouched */
 int settings_save(const void *p, uint32_t n);
 
+int platform_last_crashed(void); /* 1: the last run ended in a crash or the watchdog */
+
+/* ---- store (BARLINE's platform patch): STORE_SLOTS slots of up to STORE_SLOT_MAX bytes in the flash Felucca keeps
+ * its projects in (0x97000..0xE0000, 292 KiB). Installing this firmware gives up whatever Felucca kept there (back it up
+ * with Felucca's editor first). Each slot is checked (length + CRC) and written header last, so a cut save stays
+ * invalid and the slot reads as empty. Saving stalls the sound ~50 ms a 4 KiB sector: save when nothing plays */
+#define STORE_SLOTS 12u
+#define STORE_SLOT_MAX (24576u - 12u)
+int store_load(uint32_t slot, void *p, uint32_t n); /* 0: loaded (n must be the length saved); else p is untouched */
+int store_len(uint32_t slot);                       /* the saved length, or -1: empty or damaged */
+int store_save(uint32_t slot, const void *p, uint32_t n);
+int store_erase(uint32_t slot);
+
 /* ---- helpers for sound without floats */
 int32_t sine(uint32_t phase);          /* a full cycle over 2^32 -> -32767..32767 */
 uint32_t note_inc(int note);           /* phase step per frame of a MIDI note (0..127) at SAMPLE_RATE */
