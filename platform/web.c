@@ -214,6 +214,12 @@ int settings_save(const void *p, uint32_t n) {
   return 0;
 }
 int platform_last_crashed(void) { return 0; }
+int cpu1_run(void (*fn)(uint32_t), uint32_t arg) { (void)fn, (void)arg; return 0; }
+int cpu1_wait(void) { return 0; }
+int cpu1_state(void) { return 0; }
+static int cpu1_opt;
+int cpu1_option(int set) { if (set >= 0) cpu1_opt = set; return cpu1_opt; }
+uint32_t cpu1_jobs(void) { return 0; }
 int store_len(uint32_t slot) {
   blob_init();
   return slot < STORE_SLOTS ? rd32(SLOT_AT(slot)) : -1;

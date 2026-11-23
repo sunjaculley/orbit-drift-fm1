@@ -198,6 +198,15 @@ int settings_save(const void *p, uint32_t n);
 
 int platform_last_crashed(void); /* 1: the last run ended in a crash or the watchdog */
 
+/* ---- the second core (beta, from felucca-bsp): off unless turned on (cpu1_option(1), or GLO held at power-on),
+ * and only from the next start. A job runs while audio() does its own share; a unit whose second core misreads
+ * retires it and goes on with one core until power-off. Jobs only from audio() */
+int cpu1_run(void (*fn)(uint32_t), uint32_t arg); /* 1: handed over; 0: do it yourself */
+int cpu1_wait(void);                              /* 0: done; -1: retired, the job dropped (do it yourself) */
+int cpu1_state(void);  /* 0 off, 1 running, 2 retired (a misread, fault or late job), 3 held after a crash */
+int cpu1_option(int set); /* -1: read; 0 / 1: set for the next start. Returns the option */
+uint32_t cpu1_jobs(void);
+
 /* ---- store (BARLINE's platform patch): STORE_SLOTS slots of up to STORE_SLOT_MAX bytes in the flash Felucca keeps
  * its projects in (0x97000..0xE0000, 292 KiB). Installing this firmware gives up whatever Felucca kept there (back it up
  * with Felucca's editor first). Each slot is checked (length + CRC) and written header last, so a cut save stays

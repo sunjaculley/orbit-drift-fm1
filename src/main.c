@@ -709,6 +709,12 @@ static void drum_retune(int t, const uint8_t *p) { /* a trigless drum step: the 
   }
 }
 
+static void render_drums(int32_t *dbus, uint32_t n);
+static struct { int32_t *bus; uint32_t n; } drum_job_arg;
+static void drum_job(uint32_t a) { /* the drums, on the second core while the first renders the synth */
+  (void)a;
+  render_drums(drum_job_arg.bus, drum_job_arg.n);
+}
 static void render_drums(int32_t *dbus, uint32_t n) {
   for (int i = 0; i < DV; i++) {
     dvoice_t *v = &DVo[i];
@@ -1154,13 +1160,20 @@ void audio(int32_t *out, uint32_t nframes) {
       pump_show = (uint16_t)(32768 - pg);
     }
     uint32_t t1 = micros();
+    drum_job_arg.bus = dbus, drum_job_arg.n = n;
+    int two = cpu1_run(drum_job, 0); /* the second core takes the drums, if it runs */
     render_synth(o, sbus, n);
     if (S.pump[3] && pg < 32768)
       for (uint32_t f = 0; f < n; f++) sbus[f] = (int32_t)(((int64_t)sbus[f] * pg) >> 15); /* the sends duck too */
     uint32_t t2 = micros();
     t_syn += t2 - t1;
-    render_drums(dbus, n);
-    t_drm += micros() - t2;
+    if (!two) {
+      render_drums(dbus, n);
+    } else if (cpu1_wait()) { /* it was retired mid-job: start the drums again here */
+      for (uint32_t f = 0; f < n; f++) dbus[f] = 0;
+      render_drums(dbus, n);
+    }
+    t_drm += micros() - t2; /* (with two cores: only the wait) */
     int32_t want_a = frames(k[K_DTA]) * 256 + dmod, want_b = frames(k[K_DTB]) * 256 + dmod;
     if (want_a < 25600) want_a = 25600;
     if (want_b < 25600) want_b = 25600;
@@ -2161,9 +2174,10 @@ static void draw_sys(void) {
       put_int(d, sec_pct[i]);
       xx = text(xx, 58, b, SC[i], FONT_SMALL) + 10;
     }
-    d = put(b, "V");
-    put_int(d, vcap);
-    text(SCREEN_W - 12 - text_width(b, FONT_SMALL), 58, b, C_DIM, FONT_SMALL);
+    static const char *const C1[4] = {"1 CORE", "2 CORES", "2ND RETIRED", "2ND HELD"};
+    int st = cpu1_state();
+    text(SCREEN_W - 12 - text_width(C1[st], FONT_SMALL), 24, C1[st], st == 1 ? C_LIME : st >= 2 ? C_PINK : C_DIM, FONT_SMALL);
+    if (cpu1_option(-1) != (st == 1 || st >= 2)) text(SCREEN_W - 12 - text_width("NEXT START", FONT_SMALL), 40, "NEXT START", C_AMBER, FONT_SMALL);
   }
   int nd = 0, ns = 0;
   for (int i = 0; i < 16; i++) {
@@ -4496,8 +4510,14 @@ void loop(void) {
       song_edit(k, d);
       continue;
     }
+    if (view == V_SYS && k == 3) { /* KNOB4 on SYSTEM: the second core, from the next start */
+      int on = cpu1_option(d > 0);
+      say(on ? "2ND CORE ON: NEXT START" : "2ND CORE OFF: NEXT START");
+      dirty |= D_MAIN;
+      continue;
+    }
     if (view == V_HOME || view == V_SYS) {
-      say("SEQ: STEPS  EDIT: SOUND");
+      say(view == V_SYS ? "KNOB4: 2ND CORE (BETA)" : "SEQ: STEPS  EDIT: SOUND");
       continue;
     }
     if (view == V_PERF) {

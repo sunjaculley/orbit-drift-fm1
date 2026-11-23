@@ -12,10 +12,12 @@
 
 #include <stdint.h>
 
+#define FM1_CPU1 1 /* the second core (hal/fm1_cpu1.h): off unless the app's option turns it on */
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
 #include "fm1_guard.h"
+#include "fm1_cpu1.h"
 #include "fm1_input.h"
 #include "fm1_timer.h"
 #include "fm1_lcd_hw.h"
@@ -130,6 +132,7 @@ static void ota_show(uint32_t step, int32_t code) {
   }
 }
 static void ota_commit(const uint8_t *parm) {
+  fm1_cpu1_stop();
   bootguard_clear(&bootguard);
   usb_detach();
   fm1_delay_ms(30);
@@ -270,6 +273,23 @@ int platform_last_crashed(void) {
   }
   crash_seen = n;
   return once;
+}
+
+/* ---- the second core: an option kept in the store's last slot, read at power-on (CPU1 starts before the audio) */
+#define CPU1_OPT_MAGIC 0x4E4F3143u /* "C1ON" */
+static uint8_t cpu1_held_crash;
+int cpu1_run(void (*fn)(uint32_t), uint32_t arg) { return fm1_cpu1_run(fn, arg); }
+int cpu1_wait(void) { return fm1_cpu1_wait(); }
+int cpu1_state(void) { return fm1_cpu1_on ? 1 : cpu1_held_crash ? 3 : fm1_cpu1_gave_up ? 2 : 0; }
+uint32_t cpu1_jobs(void) { return fm1_cpu1_mb.jobs; }
+int cpu1_option(int set) {
+  uint32_t o[2] = {0, 0};
+  int on = store_load(STORE_SLOTS - 1u, o, sizeof o) == 0 && o[0] == CPU1_OPT_MAGIC && o[1] == 1u;
+  if (set < 0 || set == on) {
+    return on;
+  }
+  o[0] = CPU1_OPT_MAGIC, o[1] = set ? 1u : 0u;
+  return store_save(STORE_SLOTS - 1u, o, sizeof o) == 0 ? set : on;
 }
 
 /* ---- store: slots in Felucca's data region (BARLINE). The same header as the settings: magic, length, CRC */
@@ -545,6 +565,7 @@ static void platform_poll(void) {
   }
   if (usb.uboot_req) {
     fm1_audio_stop();
+    fm1_cpu1_stop();
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 110, 240, &FONT_S, "UBOOT (USB)", C_WHITE, 1);
     usb_detach();
@@ -567,6 +588,7 @@ static void platform_poll(void) {
 static void fm1_fault(const fm1_crash_t *c) {
   char b[12];
   uint32_t i, t0, v[3] = {c->vec, c->pc, c->rets};
+  fm1_cpu1_stop();
   fm1_audio_stop();
   lcd_fill(0, 0, 240, 240, RGB(160, 0, 0));
   draw_text_box(0, 20, 240, &FONT_S, APP_NAME " CRASH", C_WHITE, 1);
@@ -591,6 +613,7 @@ void fm1_cstart(void) {
   uint32_t *s, *d, p3, boot_mode;
   fm1_time_init();
   fm1_reset_reason();
+  fm1_cpu1_stop(); /* a reset may have left the second core running */
   p3 = fm1_boot.p3_rst;
   fm1_wdt_arm(0x0D);
   if ((p3 & 1u) && !(p3 & (4u | 0x40u))) {
@@ -621,6 +644,26 @@ void fm1_cstart(void) {
   }
   flash_ok = FL_JEDEC_OK(FL_FAR(fl_jedec_ram)());
   ota_boot_cleanup();
+  { /* the second core: GLO held at power-on flips the option; after a crash it stays off for this start */
+    int want;
+    fm1_input_init();
+    for (uint32_t t0 = fm1_ticks(); (uint32_t)(fm1_ticks() - t0) < 30u * 1000u * FM1_TICKS_PER_US;) {
+      fm1_wdt_feed();
+      fm1_input_scan();
+    }
+    want = cpu1_option(-1);
+    if (fm1_in.buttons >> BTN_GLO & 1u) {
+      want = cpu1_option(!want);
+    }
+    if (want && platform_last_crashed()) {
+      cpu1_held_crash = 1;
+    } else if (want) {
+      uint32_t id = 2166136261u;
+      for (const char *q = APP_NAME APP_VER; *q; q++) id = (id ^ (uint8_t)*q) * 16777619u;
+      fm1_cpu1_bar_build(id); /* (a new build lifts an old build's bar) */
+      fm1_cpu1_start();
+    }
+  }
   lcd_init();
   lcd_fill(0, 0, 240, 240, C_BLACK);
   fm1_input_init();
